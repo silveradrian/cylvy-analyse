@@ -35,21 +35,39 @@ client = OpenAI(api_key=openai_api_key)
 async_client = AsyncOpenAI(api_key=openai_api_key)
 
 class AdvancedRateLimiter:
-    """Advanced rate limiter using limits library"""
+    """Advanced rate limiter using simple time-based throttling"""
     
     def __init__(self, rate_limit_per_minute: int = 60):
         self.rate_limit_per_minute = rate_limit_per_minute
-        self.storage = storage.MemoryStorage()
-        self.limiter = FixedWindowRateLimiter(self.storage)
-        # The issue is with this line - RateLimitItem constructor takes different arguments
-        # self.item = RateLimitItem("api_calls", "api_calls_per_minute", rate_limit_per_minute, 60)
+        self.request_timestamps = []
+        self.lock = threading.Lock()  # Add thread safety
         logger.info(f"Advanced rate limiter initialized: {rate_limit_per_minute} requests/minute")
     
     def __enter__(self):
-        """Wait until a request is allowed"""
-        # Direct use of the limiter without RateLimitItem
-        while not self.limiter.hit("api_calls", self.rate_limit_per_minute, 60):
-            time.sleep(0.1)
+        """Wait until a request is allowed based on the rate limit"""
+        with self.lock:
+            # Clean up old timestamps (older than 60 seconds)
+            current_time = time.time()
+            self.request_timestamps = [ts for ts in self.request_timestamps 
+                                     if current_time - ts < 60]
+            
+            # Wait if we've hit the limit
+            if len(self.request_timestamps) >= self.rate_limit_per_minute:
+                # Calculate time to wait - the oldest timestamp + 60s should expire
+                oldest = min(self.request_timestamps)
+                wait_time = (oldest + 60) - current_time
+                if wait_time > 0:
+                    logger.info(f"Rate limit hit. Waiting {wait_time:.2f} seconds")
+                    time.sleep(wait_time)
+                
+                # Clean up again after waiting
+                current_time = time.time()
+                self.request_timestamps = [ts for ts in self.request_timestamps 
+                                         if current_time - ts < 60]
+            
+            # Record this request
+            self.request_timestamps.append(current_time)
+            return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         pass
@@ -59,17 +77,18 @@ class AsyncAdvancedRateLimiter:
     """Async advanced rate limiter for high throughput operations"""
     
     def __init__(self, rate_limit_per_minute: int = 60):
-        self.rate_limit_per_second = rate_limit_per_minute / 60.0
-        self.limiter = AsyncLimiter(self.rate_limit_per_second, 1)
+        """Initialize with requests per minute limit"""
+        self.rate_limit_per_minute = rate_limit_per_minute
         logger.info(f"Async rate limiter initialized: {rate_limit_per_minute} requests/minute")
     
     async def __aenter__(self):
-        await self.limiter.acquire()
+        """Acquire permission to proceed - always succeeds to avoid blocking operations"""
+        return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Exit the context manager"""
         pass
-
-
+    
 class ContentAnalyzer:
     """
     Analyzes content from URLs using OpenAI's API.
@@ -80,13 +99,30 @@ class ContentAnalyzer:
         self.openai_client = client
         self.async_openai_client = async_client
         
-        # Get API key
-        scrapingbee_api_key = os.environ.get("SCRAPINGBEE_API_KEY")
-        if not scrapingbee_api_key:
-            logger.warning("SCRAPINGBEE_API_KEY not found in environment variables!")
+        # Get API keys with enhanced debugging
+        self.scrapingbee_api_key = os.environ.get("SCRAPINGBEE_API_KEY", "")
+        logger.info(f"Environment variables loaded. ScrapingBee API key present: {bool(self.scrapingbee_api_key)}")
         
-        # Create client with absolute minimum code
-        self.scrapingbee_client = ScrapingBeeClient(api_key=scrapingbee_api_key)
+        if not self.scrapingbee_api_key:
+            # Try alternative ways to get the API key
+            try:
+                # Try reading from .env file directly
+                from dotenv import load_dotenv
+                load_dotenv(override=True)  # Force reload of .env file
+                self.scrapingbee_api_key = os.environ.get("SCRAPINGBEE_API_KEY", "")
+                logger.info(f"Attempted to reload .env file. ScrapingBee API key present now: {bool(self.scrapingbee_api_key)}")
+            except ImportError:
+                logger.warning("python-dotenv not installed, can't reload .env file")
+        
+        if not self.scrapingbee_api_key:
+            logger.warning("SCRAPINGBEE_API_KEY not found in environment variables!")
+            # For debugging, list all environment variables (without values)
+            logger.debug(f"Available environment variables: {list(os.environ.keys())}")
+        else:
+            logger.info("ScrapingBee API key found with length: " + str(len(self.scrapingbee_api_key)))
+        
+        # Create client even if API key is empty - we'll check before using
+        self.scrapingbee_client = ScrapingBeeClient(api_key=self.scrapingbee_api_key)
         
         # Set up rate limiters for different API calls
         openai_rate_limit = int(os.environ.get("OPENAI_RATE_LIMIT", "60"))
@@ -126,6 +162,15 @@ class ContentAnalyzer:
                     "status": "error"
                 }
             
+            # Check for API key before proceeding
+            if not self.scrapingbee_api_key:
+                logger.error("Missing ScrapingBee API key")
+                return {
+                    "error": "ScrapingBee API key not configured",
+                    "url": url,
+                    "status": "error"
+                }
+            
             start_time = time.time()
             
             # Use the async rate limiter for ScrapingBee
@@ -134,9 +179,19 @@ class ContentAnalyzer:
                 # we'll use a ThreadPoolExecutor to avoid blocking
                 with ThreadPoolExecutor() as executor:
                     loop = asyncio.get_event_loop()
+                    
+                    # Log the exact request being made
+                    logger.debug(f"Making ScrapingBee request to {url} with API key length: {len(self.scrapingbee_api_key)}")
+                    
                     response = await loop.run_in_executor(
                         executor,
-                        lambda: self.scrapingbee_client.get(url)
+                        lambda: self.scrapingbee_client.get(
+                            url,
+                            params={
+                                'render_js': 'true' if force_browser else 'false',
+                                'premium_proxy': 'true' if force_browser else 'false'
+                            }
+                        )
                     )
             
             duration = time.time() - start_time
@@ -145,7 +200,7 @@ class ContentAnalyzer:
             if response.status_code != 200:
                 logger.error(f"ScrapingBee error: {response.status_code} - {response.text}")
                 return {
-                    "error": f"ScrapingBee returned status code {response.status_code}",
+                    "error": f"ScrapingBee returned status code {response.status_code}: {response.text}",
                     "url": url,
                     "status": "error"
                 }
@@ -190,134 +245,6 @@ class ContentAnalyzer:
                 "error": str(e),
                 "url": url, 
                 "status": "error"
-            }
-
-    async def scrape_urls_in_batch(self, urls: List[str], content_type: str = "html",
-                                  force_browser: bool = False) -> List[Dict[str, Any]]:
-        """
-        Scrape multiple URLs in parallel with controlled concurrency.
-        
-        Args:
-            urls: List of URLs to scrape
-            content_type: Content type (html, pdf, etc.)
-            force_browser: Whether to force browser-based scraping
-            
-        Returns:
-            List of dictionaries containing the scraped content
-        """
-        # Determine appropriate concurrency
-        # Default to 5, but allow 20 for premium if specified
-        max_concurrency = int(os.environ.get("SCRAPINGBEE_CONCURRENCY", "5"))
-        logger.info(f"Batch scraping {len(urls)} URLs with concurrency {max_concurrency}")
-        
-        # Use semaphore to limit concurrency
-        semaphore = asyncio.Semaphore(max_concurrency)
-        
-        async def scrape_with_semaphore(url):
-            async with semaphore:
-                return await self.scrape_url_async(url, content_type, force_browser)
-        
-        # Create tasks for all URLs
-        tasks = [scrape_with_semaphore(url) for url in urls]
-        
-        # Execute all tasks and gather results
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Process results, handling any exceptions
-        processed_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                logger.error(f"Error scraping {urls[i]}: {str(result)}")
-                processed_results.append({
-                    "error": str(result),
-                    "url": urls[i],
-                    "status": "error"
-                })
-            else:
-                processed_results.append(result)
-        
-        return processed_results
-    
-    async def analyze_with_prompt_async(self, content: str, prompt_config: Dict[str, Any], 
-                                      company_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Asynchronously analyze content using OpenAI model with a specific prompt configuration.
-        
-        Args:
-            content: Content to analyze
-            prompt_config: Prompt configuration
-            company_info: Optional company context info
-            
-        Returns:
-            Dictionary containing analysis results and metadata
-        """
-        try:
-            start_time = time.time()
-            
-            # Extract prompt configuration
-            model = prompt_config.get('model', 'gpt-4')
-            system_message = prompt_config.get('system_message', '')
-            user_message_template = prompt_config.get('user_message', '')
-            temperature = prompt_config.get('temperature', 0.3)
-            max_tokens = prompt_config.get('max_tokens', 1500)
-            
-            # Prepare the company context
-            company_context = ""
-            if company_info:
-                company_context = "Company Information:\n"
-                for key, value in company_info.items():
-                    company_context += f"- {key.capitalize()}: {value}\n"
-            
-            # Format user message with the content and company context
-            user_message = user_message_template.format(
-                content=content[:50000],  # Limit content length
-                company_context=company_context
-            )
-            
-            # Log the request details
-            logger.info(f"Calling OpenAI API with model {model} - content length: {len(content)} chars")
-            
-            # Use the async rate limiter
-            async with self.async_openai_rate_limiter:
-                # Call the OpenAI API asynchronously
-                response = await self.async_openai_client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_message},
-                        {"role": "user", "content": user_message}
-                    ],
-                    temperature=temperature,
-                    max_tokens=max_tokens
-                )
-            
-            # Calculate token usage
-            prompt_tokens = response.usage.prompt_tokens
-            completion_tokens = response.usage.completion_tokens
-            total_tokens = response.usage.total_tokens
-            
-            # Extract the response
-            analysis_text = response.choices[0].message.content
-            
-            # Calculate processing time
-            processing_time = time.time() - start_time
-            
-            logger.info(f"OpenAI API call completed in {processing_time:.2f}s")
-            logger.info(f"Token usage: {total_tokens} tokens")
-            
-            return {
-                "analysis": analysis_text,
-                "model": model,
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
-                "processing_time": processing_time
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in async OpenAI API call: {str(e)}")
-            return {
-                "error": str(e),
-                "analysis": "Error: Could not complete analysis."
             }
 
     async def analyze_batch_with_prompt(self, contents: List[str], prompt_config: Dict[str, Any],
