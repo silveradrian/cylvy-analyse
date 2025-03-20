@@ -156,69 +156,72 @@ class DatabaseManager:
         logger.info(f"Created new job with ID: {job_id}")
         return job_id
     
-    def update_job_status(self, job_id: str, status: str = None, 
-                         processed_urls: int = None, error_count: int = None,
-                         error: str = None, total_urls: int = None,
-                         completed_at: str = None):
+    def update_job_status(self, job_id, status=None, total_urls=None, processed_urls=None, error_count=None, error=None, completed_at=None):
         """
-        Update a job's status.
+        Update job status and other fields.
         
         Args:
-            job_id: The job ID
-            status: New status
-            processed_urls: Count of processed URLs
-            error_count: Count of errors
-            error: Error message
-            total_urls: Total number of URLs
-            completed_at: ISO formatted completion timestamp
+            job_id: Job identifier
+            status: New job status
+            total_urls: Total URLs in job
+            processed_urls: Number of processed URLs
+            error_count: Number of errors encountered
+            error: Error message (if any)
+            completed_at: Completion timestamp
         """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Build the update query dynamically
-        update_parts = []
-        params = []
-        
-        if status is not None:
-            update_parts.append("status = ?")
-            params.append(status)
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
             
-        if processed_urls is not None:
-            update_parts.append("processed_urls = ?")
-            params.append(processed_urls)
+            # Build the SQL dynamically based on what's provided
+            set_clauses = []
+            params = []
             
-        if error_count is not None:
-            update_parts.append("error_count = ?")
-            params.append(error_count)
+            if status is not None:
+                set_clauses.append("status = ?")
+                params.append(status)
             
-        if error is not None:
-            update_parts.append("error = ?")
-            params.append(error)
+            if total_urls is not None:
+                set_clauses.append("total_urls = ?")
+                params.append(total_urls)
             
-        if total_urls is not None:
-            update_parts.append("total_urls = ?")
-            params.append(total_urls)
+            if processed_urls is not None:
+                set_clauses.append("processed_urls = ?")
+                params.append(processed_urls)
             
-        if completed_at is not None:
-            update_parts.append("completed_at = ?")
-            params.append(completed_at)
-        
-        if not update_parts:
-            # Nothing to update
+            if error_count is not None:
+                set_clauses.append("error_count = ?")
+                params.append(error_count)
+            
+            # Always update the updated_at timestamp
+            set_clauses.append("updated_at = ?")
+            params.append(time.time())
+            
+            if completed_at is not None:
+                # If string timestamp provided, use it directly
+                if isinstance(completed_at, str):
+                    set_clauses.append("completed_at = ?")
+                    params.append(completed_at)
+                else:
+                    # Otherwise use current time
+                    set_clauses.append("completed_at = ?")
+                    params.append(time.time())
+            
+            # Only update if we have something to update
+            if set_clauses:
+                # NOTE: Fixed - Using job_id column instead of id
+                query = f"UPDATE jobs SET {', '.join(set_clauses)} WHERE job_id = ?"
+                params.append(job_id)
+                
+                cursor.execute(query, params)
+                conn.commit()
+            
             conn.close()
-            return
+            return True
         
-        # Add job_id to params
-        params.append(job_id)
-        
-        # Execute the update query
-        query = f"UPDATE jobs SET {', '.join(update_parts)} WHERE id = ?"
-        cursor.execute(query, params)
-        
-        conn.commit()
-        conn.close()
-        
-        logger.info(f"Updated job {job_id} status to {status if status else 'unchanged'}")
+        except sqlite3.Error as e:
+            logger.error(f"Database error in update_job_status: {e}")
+            return False
     
     def save_result(self, result: Dict[str, Any]):
         """
@@ -259,62 +262,107 @@ class DatabaseManager:
         
         logger.info(f"Inserted new result for job {result.get('job_id')}, URL: {result.get('url')}")
     
-    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+    def get_job(self, job_id):
         """
-        Get a job by its ID.
+        Get job details by job ID.
         
         Args:
-            job_id: The job ID
+            job_id: Job identifier
             
         Returns:
-            Job data dictionary or None if not found
+            Job dictionary or None if not found
         """
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
-        row = cursor.fetchone()
-        
-        if not row:
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            # NOTE: Fixed - Using job_id column instead of id
+            cursor.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
+            row = cursor.fetchone()
+            
+            if not row:
+                conn.close()
+                return None
+            
+            # Get column names from cursor
+            columns = [description[0] for description in cursor.description]
+            
+            # Create a dictionary from column names and values
+            job = dict(zip(columns, row))
+            
+            # Parse JSON fields
+            if 'prompt_names' in job and job['prompt_names']:
+                try:
+                    job['prompts'] = json.loads(job['prompt_names'])
+                except json.JSONDecodeError:
+                    job['prompts'] = []
+            else:
+                job['prompts'] = []
+            
+            if 'company_info' in job and job['company_info']:
+                try:
+                    job['company_info'] = json.loads(job['company_info'])
+                except json.JSONDecodeError:
+                    job['company_info'] = {}
+            
+            # For consistency with the API, ensure job_id is present
+            if 'job_id' not in job and 'id' in job:
+                job['job_id'] = job['id']
+            
             conn.close()
+            return job
+            
+        except sqlite3.Error as e:
+            logger.error(f"Database error in get_job: {e}")
             return None
-        
-        # Convert row to dict and parse JSON fields
-        job = dict(row)
-        job['urls'] = json.loads(job['urls'])
-        job['prompts'] = json.loads(job['prompts'])
-        
-        conn.close()
-        return job
     
-    def get_results_for_job(self, job_id: str) -> List[Dict[str, Any]]:
+    def get_results_for_job(self, job_id, limit=100, offset=0):
         """
-        Get all results for a specific job.
+        Get analysis results for a specific job.
         
         Args:
-            job_id: The job ID
+            job_id: Job identifier
+            limit: Maximum number of results to return
+            offset: Number of results to skip
             
         Returns:
             List of result dictionaries
         """
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT * FROM results WHERE job_id = ?", (job_id,))
-        rows = cursor.fetchall()
-        
-        # Convert rows to dicts and parse JSON fields
-        results = []
-        for row in rows:
-            result = dict(row)
-            if result['analysis_results']:
-                result['analysis_results'] = json.loads(result['analysis_results'])
-            results.append(result)
-        
-        conn.close()
-        return results
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                "SELECT * FROM results WHERE job_id = ? ORDER BY processed_at DESC LIMIT ? OFFSET ?",
+                (job_id, limit, offset)
+            )
+            rows = cursor.fetchall()
+            
+            # Get column names from cursor
+            columns = [description[0] for description in cursor.description]
+            
+            results = []
+            for row in rows:
+                # Create a dictionary from column names and values
+                result = dict(zip(columns, row))
+                
+                # Parse JSON data
+                if 'data' in result and result['data']:
+                    try:
+                        result['data'] = json.loads(result['data'])
+                    except json.JSONDecodeError:
+                        result['data'] = {}
+                else:
+                    result['data'] = {}
+                
+                results.append(result)
+            
+            conn.close()
+            return results
+            
+        except sqlite3.Error as e:
+            logger.error(f"Database error in get_results_for_job: {e}")
+            return []
     
     def get_recent_jobs(self, limit: int = 5) -> List[Dict[str, Any]]:
         """
@@ -404,31 +452,33 @@ class DatabaseManager:
             'total_tokens': total_tokens or 0
         }
     
-    def delete_job(self, job_id: str) -> bool:
+    def delete_job(self, job_id):
         """
-        Delete a job and all its results.
+        Delete a job and its results.
         
         Args:
-            job_id: The job ID
-            
-        Returns:
-            True if successful, False otherwise
+            job_id: Job identifier
         """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
         try:
-            # Delete results first due to foreign key constraint
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            # Delete job
+            # NOTE: Fixed - Using job_id column instead of id
+            cursor.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+            
+            # Delete results
             cursor.execute("DELETE FROM results WHERE job_id = ?", (job_id,))
-            cursor.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+            
+            # Delete prompt usage
+            cursor.execute("DELETE FROM prompt_usage WHERE job_id = ?", (job_id,))
+            
             conn.commit()
             conn.close()
-            logger.info(f"Deleted job {job_id} and its results")
             return True
-        except Exception as e:
-            conn.rollback()
-            conn.close()
-            logger.error(f"Error deleting job {job_id}: {str(e)}")
+            
+        except sqlite3.Error as e:
+            logger.error(f"Database error in delete_job: {e}")
             return False
 
     def get_all_jobs(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:

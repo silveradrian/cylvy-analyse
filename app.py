@@ -343,6 +343,20 @@ def parse_csv_file(file):
     
     return url_data_list
 
+
+def get_status_description(status):
+    """Get a human-readable description for a job status."""
+    descriptions = {
+        'pending': 'Job is waiting to be processed.',
+        'running': 'Job is currently being processed.',
+        'completed': 'Job completed successfully.',
+        'completed_with_errors': 'Job completed but encountered some errors.',
+        'failed': 'Job failed to complete.',
+        'cancelled': 'Job was cancelled.'
+    }
+    return descriptions.get(status, f"Status: {status}")
+
+
 @app.route('/job/<string:job_id>')
 def job_status(job_id):
     """
@@ -351,7 +365,7 @@ def job_status(job_id):
     job = db.get_job(job_id)
     
     if not job:
-        return render_template('error.html', message=f"Job {job_id} not found"), 404
+        return render_template('error.html', error=f"Job {job_id} not found"), 404
     
     results = db.get_results_for_job(job_id)
     
@@ -376,16 +390,19 @@ def job_status(job_id):
             'successful_results': len(successful),
             'failed_results': len(failed),
             'scrape_errors': len(scrape_errors),
-            'total_tokens': sum(r.get('api_tokens', 0) for r in results),
-            'total_words': sum(r.get('word_count', 0) for r in results)
+            'total_tokens': sum(r.get('api_tokens', 0) or 0 for r in results),
+            'total_words': sum(r.get('word_count', 0) or 0 for r in results)
         })
+    
+    # Get status description (add this function if needed)
+    status_description = get_status_description(job.get('status', ''))
     
     return render_template(
         'job.html', 
         job=job, 
         results=results, 
         metrics=metrics,
-        status_description=get_status_description(job.get('status', ''))
+        status_description=status_description
     )
 
 @app.route('/api/job/<job_id>')
