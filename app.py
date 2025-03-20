@@ -18,7 +18,7 @@ import threading
 import pandas as pd
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from flask import Flask, request, jsonify, render_template, redirect, url_for, send_file, Response
+from flask import Flask, request, jsonify, render_template, redirect, url_for, send_file, Response, flash
 # Import our custom modules
 from db_manager import db
 from analyzer import ContentAnalyzer
@@ -50,13 +50,16 @@ def process_urls_in_background(job_id: str, urls: List[str], prompt_names: List[
     try:
         logger.info(f"Starting background processing for job {job_id} with {len(urls)} URLs")
         
-        # Ensure we have an event loop
-       
+        # Fix 1: Use get_running_loop or create a new one properly
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+        
+        # Fix 2: Initialize error_count at the start
+        error_count = 0
+        processed_count = 0
         
         # Update job status to running
         db.update_job_status(
@@ -67,9 +70,6 @@ def process_urls_in_background(job_id: str, urls: List[str], prompt_names: List[
             error_count=0
         )
         
-        processed_count = 0
-        error_count = 0
-        
         # Process each URL
         for url in urls:
             try:
@@ -79,11 +79,17 @@ def process_urls_in_background(job_id: str, urls: List[str], prompt_names: List[
                     logger.info(f"Job {job_id} was cancelled - stopping processing")
                     break
                 
+                # Process the URL - handle URLs as strings or dicts
+                url_string = url if isinstance(url, str) else url.get('url')
+                
                 # Process the URL
-                result = analyzer.process_url(url, prompt_names, company_info)
+                result = analyzer.process_url(url_string, prompt_names, company_info)
+                
+                # Fix 3: Ensure result has job_id for database storage
+                result['job_id'] = job_id
                 
                 # Save the result
-                db.save_result(job_id, result)
+                db.save_result(result)  # Updated to match your current db_manager API
                 
                 # Update counters
                 processed_count += 1
@@ -123,20 +129,23 @@ def process_urls_in_background(job_id: str, urls: List[str], prompt_names: List[
             job_id=job_id,
             status=final_status,
             processed_urls=processed_count,
-            error_count=error_count
+            error_count=error_count,
+            completed_at=datetime.now().isoformat()
         )
         
         logger.info(f"Completed background processing for job {job_id} - status: {final_status}")
+        return True
         
     except Exception as e:
         logger.error(f"Error in background processing for job {job_id}: {str(e)}")
         
-        # Mark the job as failed
+        # Mark the job as failed - fix: use local error_count or default to 1
         db.update_job_status(
             job_id=job_id,
             status="failed",
-            error_count=error_count + 1
+            error_count=error_count if 'error_count' in locals() else 1
         )
+        return False
     finally:
         # Remove the thread from active threads
         if threading.current_thread().ident in active_threads:
@@ -220,6 +229,9 @@ def analyze():
         urls_input = request.form.get('urls', '').strip()
         prompt_names = request.form.getlist('prompts')
         
+        # Initialize url_data_list
+        url_data_list = []
+        
         # Check input file first (prioritize file over text input)
         if 'file' in request.files and request.files['file'].filename:
             file = request.files['file']
@@ -230,10 +242,16 @@ def analyze():
                 url_data_list = parse_csv_file(file)
             elif file.filename.endswith(('.xlsx', '.xls')):
                 # Parse Excel file for URLs with company context
-                url_data_list = parse_excel_file(file)
+                if 'parse_excel_file' in globals():
+                    url_data_list = parse_excel_file(file)
+                else:
+                    flash('Excel parsing is not implemented', 'warning')
             elif file.filename.endswith('.json'):
                 # Parse JSON file for URLs with company context
-                url_data_list = parse_json_file(file)
+                if 'parse_json_file' in globals():
+                    url_data_list = parse_json_file(file)
+                else:
+                    flash('JSON parsing is not implemented', 'warning')
             else:
                 # Assume text file with one URL per line (no company context)
                 content = file.read().decode('utf-8')
@@ -245,34 +263,48 @@ def analyze():
             url_data_list = [{'url': url} for url in urls]
         
         # Filter out invalid URLs
-        url_data_list = [data for data in url_data_list if is_valid_url(data.get('url', ''))]
+        valid_url_data_list = []
+        for data in url_data_list:
+            if is_valid_url(data.get('url', '')):
+                valid_url_data_list.append(data)
         
-        if not url_data_list:
-            flash('No valid URLs provided.')
+        if not valid_url_data_list:
+            flash('No valid URLs provided.', 'danger')
             return redirect(url_for('index'))
         
         if not prompt_names:
-            flash('Please select at least one prompt configuration.')
+            flash('Please select at least one prompt configuration.', 'warning')
             return redirect(url_for('index'))
+        
+        # Get company info (if provided)
+        company_info = None  # You can extend this to get from a form field if needed
         
         # Create a new job
         job_id = db.create_job(
-            urls=[data.get('url') for data in url_data_list],
+            urls=[data.get('url') for data in valid_url_data_list],
             prompts=prompt_names
         )
         
-        # Start processing in the background
-        processing_started = process_urls_in_background(job_id, url_data_list, prompt_names)
+        # Extract URLs as strings for processing
+        url_strings = [data.get('url') for data in valid_url_data_list]
         
-        if processing_started:
-            return redirect(url_for('job_status', job_id=job_id))
-        else:
-            flash('Failed to start analysis job.')
-            return redirect(url_for('index'))
+        # Start processing in a background thread
+        thread = threading.Thread(
+            target=process_urls_in_background,
+            args=(job_id, url_strings, prompt_names, company_info)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        # Add thread ID to active threads
+        active_threads.add(thread.ident)
+        
+        # Redirect to job status page
+        return redirect(url_for('job_status', job_id=job_id))
             
     except Exception as e:
         logger.error(f"Error starting analysis: {str(e)}")
-        flash(f"Error: {str(e)}")
+        flash(f"Error: {str(e)}", 'danger')
         return redirect(url_for('index'))
 
 
@@ -549,6 +581,43 @@ def server_error(e):
 # Create required templates directory
 os.makedirs(os.path.join(os.path.dirname(__file__), 'templates'), exist_ok=True)
 os.makedirs(os.path.join(os.path.dirname(__file__), 'static'), exist_ok=True)
+
+def is_valid_url(url):
+    """
+    Check if a string is a valid URL.
+    
+    Args:
+        url: String to check
+        
+    Returns:
+        True if valid URL, False otherwise
+    """
+    import re
+    if not url or not isinstance(url, str):
+        return False
+        
+    pattern = re.compile(
+        r'^(?:http|ftp)s?://'  # http:// or https://
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'  # domain...
+        r'localhost|'  # localhost...
+        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or IP
+        r'(?::\d+)?'  # optional port
+        r'(?:/?|[/?]\S+)?$', re.IGNORECASE)  # path
+    
+    return bool(re.match(pattern, url))
+
+def get_status_description(status):
+    """Get a human-readable description for a job status."""
+    descriptions = {
+        'pending': 'Job is waiting to be processed.',
+        'running': 'Job is currently being processed.',
+        'completed': 'Job completed successfully.',
+        'completed_with_errors': 'Job completed but encountered some errors.',
+        'failed': 'Job failed to complete.',
+        'cancelled': 'Job was cancelled.'
+    }
+    return descriptions.get(status, f"Status: {status}")
+
 
 if __name__ == '__main__':
     # Run the Flask app
