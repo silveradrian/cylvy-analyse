@@ -574,21 +574,76 @@ class ContentAnalyzer:
             }
     
     def process_url(self, url: str, prompt_names: List[str], 
-                 company_info: Optional[Dict[str, Any]] = None,
-                 content_type: str = "html", 
-                 force_browser: bool = False) -> Dict[str, Any]:
+             company_info: Optional[Dict[str, Any]] = None,
+             content_type: str = "html", 
+             force_browser: bool = False) -> Dict[str, Any]:
         """
-        Synchronous wrapper for process_url_async.
+        Process a single URL by scraping content and analyzing it with selected prompts.
+        
+        Args:
+            url: URL to process
+            prompt_names: List of prompt configuration names to use
+            company_info: Optional company context info
+            content_type: Content type (html, pdf, etc.)
+            force_browser: Whether to force browser-based scraping
+            
+        Returns:
+            Dictionary containing processing results formatted for database storage
         """
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        
         try:
-            result = loop.run_until_complete(
+            # Get the raw result from async processing
+            raw_result = loop.run_until_complete(
                 self.process_url_async(url, prompt_names, company_info, content_type, force_browser)
             )
+            
+            # Current timestamp for processed_at
+            current_time = time.time()
+            
+            # Extract the first prompt name (or default to empty string)
+            prompt_name = prompt_names[0] if prompt_names else ""
+            
+            # Calculate API tokens used
+            api_tokens = raw_result.get("api_tokens", 0)
+            
+            # Format result to match database schema (results table)
+            result = {
+                'url': url,
+                'status': raw_result.get('status', 'unknown'),
+                'title': raw_result.get('title', ''),
+                'content_type': raw_result.get('content_type', 'html'),
+                'word_count': raw_result.get('word_count', 0),
+                'processed_at': current_time,  # Use processed_at instead of created_at
+                'prompt_name': prompt_name,    # Use first prompt as primary prompt
+                'api_tokens': api_tokens,
+                'error': raw_result.get('error', ''),
+                'data': json.dumps(raw_result.get('analysis_results', {}))
+            }
+            
+            # Log successful processing
+            logger.info(f"Processed URL {url} with {len(prompt_names)} prompts - Status: {result['status']}")
+            
+            return result
+        
+        except Exception as e:
+            logger.error(f"Error in process_url for {url}: {str(e)}")
+            # Return error result that matches database schema
+            return {
+                'url': url,
+                'status': 'error',
+                'title': '',
+                'content_type': content_type,
+                'word_count': 0,
+                'processed_at': time.time(),  # Current time
+                'prompt_name': prompt_names[0] if prompt_names else "",
+                'api_tokens': 0,
+                'error': str(e),
+                'data': '{}'
+            }
         finally:
             loop.close()
-        return result
 
 
 class URLProcessor:
