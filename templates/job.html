@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}Job Status - {{ job.id }}{% endblock %}
+
+<!-- Rest of the template... -->
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    // Error chart
+    var errorCtx = document.getElementById('errorChart').getContext('2d');
+    var errorChart = new Chart(errorCtx, {
+        type: 'pie',
+        data: {
+            labels: ['Scraping Errors', 'Analysis Errors', 'Successful'],
+            datasets: [{
+                label: 'Error Distribution',
+                data: [
+                    {% if metrics and metrics.scrape_errors is not none %}{{ metrics.scrape_errors }}{% else %}0{% endif %},
+                    {% if metrics and metrics.failed_results is not none and metrics.scrape_errors is not none %}
+                        {{ metrics.failed_results - metrics.scrape_errors }}
+                    {% else %}0{% endif %},
+                    {% if metrics and metrics.successful_results is not none %}{{ metrics.successful_results }}{% else %}0{% endif %}
+                ],
+                backgroundColor: [
+                    'rgba(255, 99, 132, 0.2)',
+                    'rgba(255, 159, 64, 0.2)',
+                    'rgba(75, 192, 192, 0.2)'
+                ],
+                borderColor: [
+                    'rgba(255, 99, 132, 1)',
+                    'rgba(255, 159, 64, 1)',
+                    'rgba(75, 192, 192, 1)'
+                ],
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'top',
+                },
+                title: {
+                    display: true,
+                    text: 'Processing Results'
+                }
+            }
+        }
+    });
+</script>
+{% endblock %}

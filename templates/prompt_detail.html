@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}{{ prompt.name }} - Prompt Details{% endblock %}
+
+{% block content %}
+<div class="col-md-12">
+    <div class="card shadow-sm">
+        <div class="card-header bg-primary text-white">
+            <i class="bi bi-file-earmark-text"></i> Prompt Details: {{ prompt.name }}
+        </div>
+        <div class="card-body">
+            <div class="mb-4">
+                <h5>Basic Information</h5>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <strong>Name:</strong> {{ prompt.name }}
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <strong>Category Code:</strong> {{ prompt.category_code }}
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <strong>Model:</strong> {{ prompt.model }}
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <strong>Description:</strong> {{ prompt.description }}
+                </div>
+            </div>
+
+            <div class="mb-4">
+                <h5>System Instructions</h5>
+                <div class="card bg-light">
+                    <div class="card-body">
+                        <pre class="mb-0">{{ prompt.system_instructions }}</pre>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mb-4">
+                <h5>Analysis Prompt</h5>
+                <div class="card bg-light">
+                    <div class="card-body">
+                        <pre class="mb-0">{{ prompt.analysis_prompt }}</pre>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mb-4">
+                <h5>Output Fields</h5>
+                <div class="table-responsive">
+                    <table class="table table-bordered">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Field Name</th>
+                                <th>Type</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for field in prompt.output_fields %}
+                            <tr>
+                                <td>{{ field.name }}</td>
+                                <td><code>{{ field.field_type }}</code></td>
+                                <td>{{ field.details }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div>
+                <h5>Other Details</h5>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <strong>Delimiter:</strong> <code>{{ prompt.delimiter }}</code>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <strong>Source File:</strong> {{ prompt.source_file }}
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="card-footer">
+            <a href="{{ url_for('list_prompts') }}" class="btn btn-secondary">
+                <i class="bi bi-arrow-left"></i> Back to Prompts
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %}

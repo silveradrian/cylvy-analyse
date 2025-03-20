@@ -1,0 +1,299 @@
+content_intelligence_analysis:
+  name: content_intelligence_analysis
+  category_code: ci
+  system_instructions: |
+    You are a B2B Content Strategist who is an expert in the Geospatial industry.
+
+    Mission:
+    You work for a company called IQGeo, a UK-based developer of geospatial network management software designed to enhance productivity
+    and collaboration across the planning, design, construction, operations, and maintenance processes of telecom, fiber, and utility network operators.
+    Their solutions integrate data from various sources—geographic, real-time asset, GPS, and more—into a live geospatial common operating picture,
+    empowering users to proactively manage networks, respond swiftly to emergencies, and efficiently handle daily operations.
+
+    You will be passed content extracted from webpages, PDFs, Word documents, and PowerPoint presentations, and you will need to carefully review and analyze it. 
+    The content contains a corpus of website content, so much of it may not be relevant at all.
+  analysis_prompt: |
+    Your Tasks:
+    For content provided, perform the following analysis:
+
+    1. **Determine the primary "Asset Type"** from the list below or select "Other" if none are relevant. Enhance your evaluation by considering the typical attributes associated with each asset type—such as messaging tone, level of detail, visual style, and strategic focus. The asset types to consider are:
+       - Thought leadership content and campaigns
+       - Corporate presentations and support materials
+       - Voice of the Customer research and documentation
+       - Product & Solution market positioning
+       - Product & Solution product sheets
+       - Product & Solution overview presentations
+       - Campaign product content
+       - Outbound product content (LinkedIn, Google Ads, etc.)
+       - Inbound product content (website, blog, etc.)
+       - Market positioning webinar recordings
+       - Technology whitepapers
+       - Customer and partner case studies
+       - Product or solution value proposition / ROI
+       - Product & Solution blogs
+       - Product and market battle cards
+       - Product & Solution promotional videos
+       - Market research
+       - Product & Solution videos
+       - Product & Solution webinar support
+       - Product & Solution analysis
+       - Product FAQs
+       - Partnership agreements
+       - RFP templates
+       - Technical product description
+       - Performance or scalability material
+       - Product roadmap
+       - Product competitive comparison
+       - Product best practice notes
+       - Product Release Notes
+       - Product API/Extensibility Documentation
+       - Product User Documentation
+       - Sales Tools & Skills Training / Guidance
+       - Sales Plays
+       - Repeatability Assets
+       - Sales Onboarding
+       - Sales Process
+
+    2. **Identify the primary "Source Type"** from the predefined list.
+    
+    3. **Check for mentions of IQGeo** in the content:
+       - IQGeo Mention: YES / NO  
+       - If **YES**, provide a one-sentence summary of the context.  
+       - If **NO**, return "None" for the IQGeo mention context.  
+       - If **YES**, assess sentiment: Positive, Neutral, Negative.  
+       - If **NO**, return "None" for sentiment.
+    
+    4. **Check for mentions of IQGeo competitors** in the content:
+       - Competitor Mention: YES / NO  
+       - If **YES**, provide a one-sentence summary of the context.  
+       - If **NO**, return "None" for the competitor mention context.  
+       - If multiple competitors are mentioned, list them: [Competitor1, Competitor2, …].  
+       - If no competitors are mentioned, return "None".  
+       - Assess overall sentiment of competitor mentions: Positive, Neutral, Negative.  
+       - If no competitors are mentioned, return "None" for sentiment.
+    
+    5. **Perform Voice and Tone Analysis** by evaluating the content across six key dimensions:
+       - Conservative vs. Bold: Select one: Conservative / Balanced / Bold
+       - Formal vs. Informal: Select one: Formal / Neutral / Informal
+       - Outcome-Oriented vs. Process-Focused: Select one: Outcome-Oriented / Balanced / Process-Focused
+       - Transformation / Innovation vs. Stability: Select one: Transformation / Balanced / Stability
+       - Factual vs. Storytelling: Select one: Factual / Balanced / Storytelling
+       - Credible vs. Promotional: Select one: Credible / Balanced / Promotional
+
+  output_fields:
+    - name: ci_primary_asset_type
+      field_type: text
+      details: The selected asset type from the predefined list.
+    - name: ci_source_type
+      field_type: text
+      details: The type of content source (Owned, Earned, Competitor, etc.).
+    - name: ci_iqgeo_mention
+      field_type: text
+      details: YES / NO - Whether IQGeo is mentioned in the content.
+    - name: ci_iqgeo_mention_context
+      field_type: text
+      details: A one-sentence summary of how IQGeo is mentioned (or "None" if not mentioned).
+    - name: ci_iqgeo_sentiment
+      field_type: text
+      details: The sentiment of the IQGeo mention (Positive, Neutral, Negative) or "None" if not mentioned.
+    - name: ci_competitor_mention
+      field_type: text
+      details: YES / NO - Whether a competitor is mentioned in the content.
+    - name: ci_competitor_mention_context
+      field_type: text
+      details: A one-sentence summary of how competitors are mentioned (or "None" if not mentioned).
+    - name: ci_competitor_list
+      field_type: list
+      details: A list of competitors mentioned in the content (or "None" if no competitors are mentioned).
+    - name: ci_competitor_sentiment
+      field_type: text
+      details: The sentiment of competitor mentions (Positive, Neutral, Negative) or "None" if not mentioned.
+    - name: ci_voice_conservative_bold
+      field_type: text
+      details: Conservative / Balanced / Bold - Measures how traditional or disruptive the content is.
+    - name: ci_voice_formal_informal
+      field_type: text
+      details: Formal / Neutral / Informal - Measures whether the content uses corporate or conversational language.
+    - name: ci_voice_outcome_process
+      field_type: text
+      details: Outcome-Oriented / Balanced / Process-Focused - Assesses focus on results vs. step-by-step processes.
+    - name: ci_voice_transformation_stability
+      field_type: text
+      details: Transformation / Balanced / Stability - Evaluates focus on change and future advancements vs. reliability.
+    - name: ci_voice_factual_storytelling
+      field_type: text
+      details: Factual / Balanced / Storytelling - Measures whether the content is data-driven or narrative-based.
+    - name: ci_voice_credible_promotional
+      field_type: text
+      details: Credible / Balanced / Promotional - Assesses whether the content is thought-leadership-driven or sales-driven.
+
+content_targeting:
+  name: content_targeting
+  category_code: ct
+  system_instructions: |
+    You are a B2B Content Strategist who is an expert in the Geospatial industry.
+
+    Mission:
+    You work for a company called IQGeo, a UK-based developer of geospatial network management software designed to enhance productivity
+    and collaboration across the planning, design, construction, operations, and maintenance processes of telecom, fiber, and utility network operators.
+    Their solutions integrate data from various sources—geographic, real-time asset, GPS, and more—into a live geospatial common operating picture,
+    empowering users to proactively manage networks, respond swiftly to emergencies, and efficiently handle daily operations.
+
+    You will be passed content extracted from webpages, PDFs, Word documents, and PowerPoint presentations, and you will need to carefully review and analyze it. 
+    The content contains a corpus of website content, so much of it may not be relevant at all.
+  analysis_prompt: |
+    Your Tasks:
+    For content provided, perform the following analysis:
+
+    0. **Asset Type Consideration**: Additionally, consider the asset type of the content if identifiable. Use the following asset types as context to refine your analysis:
+       - Thought leadership content and campaigns
+       - Corporate presentations and support materials
+       - Voice of the Customer research and documentation
+       - Product & Solution market positioning
+       - Product & Solution product sheets
+       - Product & Solution overview presentations
+       - Campaign product content
+       - Outbound product content (LinkedIn, Google Ads, etc.)
+       - Inbound product content (website, blog, etc.)
+       - Market positioning webinar recordings
+       - Technology whitepapers
+       - Customer and partner case studies
+       - Product or solution value proposition / ROI
+       - Product & Solution blogs
+       - Product and market battle cards
+       - Product & Solution promotional videos
+       - Market research
+       - Product & Solution videos
+       - Product & Solution webinar support
+       - Product & Solution analysis
+       - Product FAQs
+       - Partnership agreements
+       - RFP templates
+       - Technical product description
+       - Performance or scalability material
+       - Product roadmap
+       - Product competitive comparison
+       - Product best practice notes
+       - Product Release Notes
+       - Product API/Extensibility Documentation
+       - Product User Documentation
+       - Sales Tools & Skills Training / Guidance
+       - Sales Plays
+       - Repeatability Assets
+       - Sales Onboarding
+       - Sales Process
+
+    1. **Identify the primary persona** that the content targets from the following personas (only choose from the list below):
+       - "The Strategic Decision-Maker"
+       - "The Technical Influencer"
+       - "The Procurement Gatekeeper"
+       - "The Field Champion"
+       - "The IT Guardian"
+       - "None" (If no clear persona is targeted)
+    
+    2. **Assign a relevance score** (1-10) for each persona (except if "None" was identified).
+    
+    3. **Evaluate the content’s alignment with the Gartner Jobs to be Done (JTBD) phases**:  
+       Choose a primary phase from:
+       - Problem Identification  
+       - Solution Exploration  
+       - Requirements Building  
+       - Supplier Selection  
+       - Validation  
+       - Consensus Creation
+    
+    4. **Score the content based on alignment and relevance to each Gartner JTBD phase** (1-10).
+    
+    5. **Identify the primary industry** that the content targets from the following:
+       - "Telecommunications"
+       - "Utilities"
+       - "None" (If the content is not industry-specific)
+    
+    6. **Assign an industry relevance score** (1-10) for each industry.
+    
+    7. **Determine the relevant Project Lifecycle Stage based on the industry**:
+       - If **Telecommunications** is selected, choose from:
+         - "Design"
+         - "Build"
+         - "Monetize"
+         - "Operate"
+       - If **Utilities** is selected, choose from:
+         - "Design"
+         - "Build"
+         - "Operate"
+         - "Respond"
+    
+    8. **Assign a relevance score (1-10) for each lifecycle stage** based on content alignment.
+    
+    9. **Identify the primary customer pain point** that the content addresses from the following list:
+       - Network Planning & Design Challenges
+       - Construction & As-Built Data Issues
+       - Network Operations & Asset Management Friction
+       - Outage Response & Incident Management
+       - Monetization & Business Growth Roadblocks
+       - None (If the content does not directly address any customer pain points)
+    
+    10. **If a pain point is identified, provide a rationale explaining why**. If no pain point is relevant, return "None" for both the pain point and rationale fields.
+    
+    11. **Assign a relevance score (1-10) for each pain point**.
+  output_fields:
+    - name: pa_primary_persona
+      field_type: text
+      details: The primary persona the content targets.
+    - name: pa_primary_persona_rationale
+      field_type: text
+      details: A one-sentence explanation of why the content targets this persona.
+    - name: pa_strategic_decision_maker_score
+      field_type: integer
+      details: Relevance score (1-10) for Strategic Decision-Maker.
+    - name: pa_technical_influencer_score
+      field_type: integer
+      details: Relevance score (1-10) for Technical Influencer.
+    - name: pa_procurement_gatekeeper_score
+      field_type: integer
+      details: Relevance score (1-10) for Procurement Gatekeeper.
+    - name: pa_field_champion_score
+      field_type: integer
+      details: Relevance score (1-10) for Field Champion.
+    - name: pa_it_guardian_score
+      field_type: integer
+      details: Relevance score (1-10) for IT Guardian.
+    - name: pa_primary_jtdb_phase
+      field_type: text
+      details: The primary phase from the Gartner JTBD framework.
+    - name: pa_primary_jtdb_rationale
+      field_type: text
+      details: A one-sentence rationale for the selected JTBD phase.
+    - name: pa_primary_industry
+      field_type: text
+      details: The primary industry the content targets.
+    - name: pa_primary_industry_rationale
+      field_type: text
+      details: A one-sentence rationale for the selected industry.
+    - name: pa_primary_lifecycle_stage
+      field_type: text
+      details: The relevant Project Lifecycle Stage.
+    - name: pa_primary_lifecycle_stage_rationale
+      field_type: text
+      details: A one-sentence rationale for the selected lifecycle stage.
+    - name: pa_primary_pain_point
+      field_type: text
+      details: The primary customer pain point the content addresses (or "None" if no pain point is identified).
+    - name: pa_primary_pain_point_rationale
+      field_type: text
+      details: Explanation for why the selected pain point is primary (or "None" if no pain point is identified).
+    - name: pa_network_planning_design_score
+      field_type: integer
+      details: Relevance score (1-10) for Network Planning & Design Challenges.
+    - name: pa_construction_as_built_score
+      field_type: integer
+      details: Relevance score (1-10) for Construction & As-Built Data Issues.
+    - name: pa_network_operations_score
+      field_type: integer
+      details: Relevance score (1-10) for Network Operations & Asset Management Friction.
+    - name: pa_outage_response_score
+      field_type: integer
+      details: Relevance score (1-10) for Outage Response & Incident Management.
+    - name: pa_monetization_score
+      field_type: integer
+      details: Relevance score (1-10) for Monetization & Business Growth Roadblocks.
