@@ -18,7 +18,7 @@
             box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
         }
         .hidden {
-            display: none;
+            display: none !important;  /* Added !important flag */
         }
         .nav-pills .nav-link.active {
             background-color: #0d6efd;
@@ -50,7 +50,7 @@
 </head>
 <body>
 
-<!-- Loading overlay -->
+<!-- Fixed: Made sure this is hidden by default -->
 <div class="loading-overlay hidden" id="loadingOverlay">
     <div class="spinner-border text-primary mb-3" role="status">
         <span class="visually-hidden">Loading...</span>
@@ -224,7 +224,7 @@
                     <div class="card-body p-0">
                         <div class="list-group list-group-flush">
                             {% for job in recent_jobs %}
-                                <a href="/job/{{ job.id }}" class="list-group-item list-group-item-action">
+                                <a href="/job/{{ job.job_id }}" class="list-group-item list-group-item-action">
                                     <div class="d-flex w-100 justify-content-between">
                                         <h6 class="mb-1">
                                             {% if job.status == 'completed' %}
@@ -238,9 +238,14 @@
                                             {% else %}
                                                 <span class="badge bg-secondary">{{ job.status|capitalize }}</span>
                                             {% endif %}
-                                            {{ job.urls[0] if job.urls else 'No URL' }}
-                                            {% if job.urls and job.urls|length > 1 %}
-                                                <span class="text-muted">+ {{ job.urls|length - 1 }} more</span>
+                                            
+                                            {% if job.urls and job.urls|length > 0 %}
+                                                {{ job.urls[0] }}
+                                                {% if job.urls|length > 1 %}
+                                                    <span class="text-muted">+ {{ job.urls|length - 1 }} more</span>
+                                                {% endif %}
+                                            {% else %}
+                                                No URL
                                             {% endif %}
                                         </h6>
                                         <small class="text-muted">{{ job.created_at|format_date }}</small>
@@ -274,53 +279,82 @@
 <!-- Custom scripts -->
 <script>
     document.addEventListener('DOMContentLoaded', function() {
+        // Hide loading overlay immediately when page loads
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        if (loadingOverlay) {
+            loadingOverlay.classList.add('hidden');
+        }
+        
         // Show loading overlay when form is submitted
         const form = document.getElementById('analysisForm');
-        const loadingOverlay = document.getElementById('loadingOverlay');
         
-        form.addEventListener('submit', function(e) {
-            // Basic validation
-            const urlsInput = document.getElementById('urls');
-            const fileInput = document.getElementById('file');
-            const promptCheckboxes = document.querySelectorAll('input[name="prompts"]:checked');
-            
-            const activeTab = document.querySelector('.tab-pane.active');
-            const isTextTab = activeTab.id === 'text-input';
-            
-            if (isTextTab && (!urlsInput.value || urlsInput.value.trim() === '')) {
-                e.preventDefault();
-                alert('Please enter at least one URL.');
-                return;
-            }
-            
-            if (!isTextTab && (!fileInput.files || fileInput.files.length === 0)) {
-                e.preventDefault();
-                alert('Please select a file to upload.');
-                return;
-            }
-            
-            if (promptCheckboxes.length === 0) {
-                e.preventDefault();
-                alert('Please select at least one analysis prompt.');
-                return;
-            }
-            
-            // Show loading overlay
-            loadingOverlay.classList.remove('hidden');
-        });
-    });
-<script>
-    // Make sure loading overlay is hidden when page is ready
-    document.addEventListener('DOMContentLoaded', function() {
-        const loadingOverlay = document.getElementById('loading-overlay');
-        if (loadingOverlay) {
-            setTimeout(function() {
-                loadingOverlay.style.display = 'none';
-            }, 500);
+        if (form) {
+            form.addEventListener('submit', function(e) {
+                // Basic validation
+                const urlsInput = document.getElementById('urls');
+                const fileInput = document.getElementById('file');
+                const promptCheckboxes = document.querySelectorAll('input[name="prompts"]:checked');
+                
+                const activeTab = document.querySelector('.tab-pane.active');
+                const isTextTab = activeTab.id === 'text-input';
+                
+                if (isTextTab && (!urlsInput.value || urlsInput.value.trim() === '')) {
+                    e.preventDefault();
+                    alert('Please enter at least one URL.');
+                    return;
+                }
+                
+                if (!isTextTab && (!fileInput.files || fileInput.files.length === 0)) {
+                    e.preventDefault();
+                    alert('Please select a file to upload.');
+                    return;
+                }
+                
+                if (promptCheckboxes.length === 0) {
+                    e.preventDefault();
+                    alert('Please select at least one analysis prompt.');
+                    return;
+                }
+                
+                // Show loading overlay
+                if (loadingOverlay) {
+                    loadingOverlay.classList.remove('hidden');
+                }
+            });
         }
     });
 </script>
 
+<!-- Force hide loading overlay after timeout -->
+<script>
+    // Fallback in case the overlay doesn't hide properly
+    setTimeout(function() {
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        if (loadingOverlay) {
+            loadingOverlay.classList.add('hidden');
+            console.log('Forcibly hiding loading overlay after timeout');
+        }
+    }, 2000);
+</script>
+
+<!-- Add a debug button that will appear if loading overlay gets stuck -->
+<script>
+    setTimeout(function() {
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        if (loadingOverlay && getComputedStyle(loadingOverlay).display !== 'none' && 
+            !loadingOverlay.classList.contains('hidden')) {
+            
+            const debugButton = document.createElement('button');
+            debugButton.innerHTML = 'Click to Hide Loading Screen';
+            debugButton.className = 'btn btn-danger mt-3';
+            debugButton.onclick = function() {
+                loadingOverlay.classList.add('hidden');
+                this.remove();
+            };
+            
+            loadingOverlay.appendChild(debugButton);
+        }
+    }, 5000);
 </script>
 
 </body>

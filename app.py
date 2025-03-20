@@ -19,12 +19,10 @@ import pandas as pd
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template, redirect, url_for, send_file, Response
-
 # Import our custom modules
 from db_manager import db
 from analyzer import ContentAnalyzer
-from prompt_loader import list_available_prompts, get_prompt_by_name
-
+from prompt_loader import list_available_prompts, get_prompt_by_name, PromptLoader
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
