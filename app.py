@@ -157,20 +157,51 @@ def format_date(value, format='%Y-%m-%d %H:%M:%S'):
     if value is None:
         return ""
     
-    if isinstance(value, str):
-        try:
-            # Try to parse ISO format
-            dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
-        except ValueError:
-            # If parse fails, return as is
-            return value
-    else:
-        dt = value
-    
-    # You can adjust timezone if needed
-    # dt = dt.astimezone(pytz.timezone('UTC'))
-    return dt.strftime(format)
+    try:
+        # Handle float timestamps (UNIX timestamps)
+        if isinstance(value, (float, int)):
+            dt = datetime.fromtimestamp(value)
+            return dt.strftime(format)
+        
+        # Handle ISO format strings
+        if isinstance(value, str):
+            try:
+                # Try to parse ISO format
+                dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                return dt.strftime(format)
+            except ValueError:
+                # If parse fails, return as is
+                return value
+        
+        # Handle datetime objects directly
+        if hasattr(value, 'strftime'):
+            return value.strftime(format)
+        
+        # Default case
+        return str(value)
+    except Exception as e:
+        # Safely handle any unexpected errors
+        logger.warning(f"Date format error: {str(e)}")
+        return str(value)
 
+
+
+@app.template_filter('get')
+def get_attribute(obj, attr, default=""):
+    """Safely get an attribute or key from an object/dict."""
+    if obj is None:
+        return default
+    
+    # Try dict-like access
+    if isinstance(obj, dict):
+        return obj.get(attr, default)
+    
+    # Try attribute access
+    if hasattr(obj, attr):
+        return getattr(obj, attr)
+    
+    # Default
+    return default
 
 
 # Flask routes
@@ -362,48 +393,54 @@ def job_status(job_id):
     """
     Display job status page.
     """
-    job = db.get_job(job_id)
-    
-    if not job:
-        return render_template('error.html', error=f"Job {job_id} not found"), 404
-    
-    results = db.get_results_for_job(job_id)
-    
-    # Initialize metrics with default values
-    metrics = {
-        'total_urls': job.get('total_urls', 0),
-        'processed_urls': job.get('processed_urls', 0),
-        'successful_results': 0,
-        'failed_results': 0,
-        'scrape_errors': 0,
-        'total_tokens': 0,
-        'total_words': 0
-    }
-    
-    # Calculate metrics only if we have results
-    if results:
-        successful = [r for r in results if r.get('status') == 'success']
-        failed = [r for r in results if r.get('status') != 'success']
-        scrape_errors = [r for r in results if r.get('status') == 'scrape_error']
+    try:
+        job = db.get_job(job_id)
         
-        metrics.update({
-            'successful_results': len(successful),
-            'failed_results': len(failed),
-            'scrape_errors': len(scrape_errors),
-            'total_tokens': sum(r.get('api_tokens', 0) or 0 for r in results),
-            'total_words': sum(r.get('word_count', 0) or 0 for r in results)
-        })
-    
-    # Get status description (add this function if needed)
-    status_description = get_status_description(job.get('status', ''))
-    
-    return render_template(
-        'job.html', 
-        job=job, 
-        results=results, 
-        metrics=metrics,
-        status_description=status_description
-    )
+        if not job:
+            return render_template('error.html', error=f"Job {job_id} not found"), 404
+        
+        results = db.get_results_for_job(job_id)
+        
+        # Ensure each result has analysis_results
+        for result in results:
+            if not result.get('analysis_results'):
+                result['analysis_results'] = {}
+        
+        # Initialize metrics with default values
+        metrics = {
+            'total_urls': job.get('total_urls', 0),
+            'processed_urls': job.get('processed_urls', 0),
+            'successful_results': 0,
+            'failed_results': 0,
+            'scrape_errors': 0,
+            'total_tokens': 0,
+            'total_words': 0
+        }
+        
+        # Calculate metrics only if we have results
+        if results:
+            successful = [r for r in results if r.get('status') == 'success']
+            failed = [r for r in results if r.get('status') != 'success']
+            scrape_errors = [r for r in results if r.get('status') == 'scrape_error']
+            
+            metrics.update({
+                'successful_results': len(successful),
+                'failed_results': len(failed),
+                'scrape_errors': len(scrape_errors),
+                'total_tokens': sum(r.get('api_tokens', 0) for r in results),
+                'total_words': sum(r.get('word_count', 0) for r in results)
+            })
+        
+        return render_template(
+            'job.html', 
+            job=job, 
+            results=results, 
+            metrics=metrics,
+            status_description=get_status_description(job.get('status', ''))
+        )
+    except Exception as e:
+        logger.error(f"Error displaying job status: {str(e)}")
+        return render_template('error.html', error=f"Error loading job: {str(e)}"), 500
 
 @app.route('/api/job/<job_id>')
 def api_job_status(job_id):

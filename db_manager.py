@@ -367,61 +367,39 @@ class DatabaseManager:
             logger.error(f"Database error in get_job: {e}")
             return None
     
-    def get_results_for_job(self, job_id, limit=100, offset=0):
+    def get_results_for_job(self, job_id: str) -> List[Dict[str, Any]]:
         """
-        Get analysis results for a specific job.
+        Get all results for a specific job.
         
         Args:
-            job_id: Job identifier
-            limit: Maximum number of results to return
-            offset: Number of results to skip
+            job_id: The job ID
             
         Returns:
             List of result dictionaries
         """
-        try:
-            # Ensure limit and offset are integers
-            try:
-                limit = int(limit) if limit is not None else 100
-                offset = int(offset) if offset is not None else 0
-            except (ValueError, TypeError):
-                limit = 100
-                offset = 0
-                
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "SELECT * FROM results WHERE job_id = ? ORDER BY processed_at DESC LIMIT ? OFFSET ?",
-                (job_id, limit, offset)
-            )
-            rows = cursor.fetchall()
-            
-            # Get column names from cursor
-            columns = [description[0] for description in cursor.description]
-            
-            results = []
-            for row in rows:
-                # Create a dictionary from column names and values
-                result = dict(zip(columns, row))
-                
-                # Parse JSON data
-                if 'data' in result and result['data']:
-                    try:
-                        result['data'] = json.loads(result['data'])
-                    except json.JSONDecodeError:
-                        result['data'] = {}
-                else:
-                    result['data'] = {}
-                
-                results.append(result)
-            
-            conn.close()
-            return results
-            
-        except sqlite3.Error as e:
-            logger.error(f"Database error in get_results_for_job: {e}")
-            return []
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT * FROM results WHERE job_id = ?", (job_id,))
+        rows = cursor.fetchall()
+        
+        # Convert rows to dicts and parse JSON fields
+        results = []
+        for row in rows:
+            result = dict(row)
+            # Ensure analysis_results is properly parsed
+            if result.get('analysis_results'):
+                try:
+                    result['analysis_results'] = json.loads(result['analysis_results'])
+                except (json.JSONDecodeError, TypeError):
+                    result['analysis_results'] = {}
+            else:
+                result['analysis_results'] = {}
+            results.append(result)
+        
+        conn.close()
+        return results
     
     def get_recent_jobs(self, limit: int = 5) -> List[Dict[str, Any]]:
         """

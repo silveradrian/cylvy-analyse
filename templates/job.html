@@ -163,7 +163,7 @@
                                     </div>
                                     <div class="d-flex justify-content-between">
                                         <span>Failure Rate:</span>
-                                        <strong>{{ ((metrics.failed_results / job.total_urls) * 100)|round(1) }}%</strong>
+                                        <strong>{{ ((metrics.failed_results / job.total_urls) * 100)|round(1) if job.total_urls else 0 }}%</strong>
                                     </div>
                                 </div>
                             </div>
@@ -283,13 +283,15 @@
                                                     Details
                                                 </button>
                                             </li>
-                                            {% for prompt_name, analysis in result.analysis_results.items() %}
-                                            <li class="nav-item" role="presentation">
-                                                <button class="nav-link" id="{{ prompt_name|lower }}-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#{{ prompt_name|lower }}{{ loop.parent.index }}" type="button" role="tab" aria-controls="{{ prompt_name|lower }}{{ loop.parent.index }}" aria-selected="false">
-                                                    {{ prompt_name }}
-                                                </button>
-                                            </li>
-                                            {% endfor %}
+                                            {% if result.analysis_results is defined and result.analysis_results %}
+                                                {% for prompt_name, analysis in result.analysis_results.items() %}
+                                                <li class="nav-item" role="presentation">
+                                                    <button class="nav-link" id="{{ prompt_name|lower }}-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#{{ prompt_name|lower }}{{ loop.parent.index }}" type="button" role="tab" aria-controls="{{ prompt_name|lower }}{{ loop.parent.index }}" aria-selected="false">
+                                                        {{ prompt_name }}
+                                                    </button>
+                                                </li>
+                                                {% endfor %}
+                                            {% endif %}
                                         </ul>
                                         <div class="tab-content pt-3" id="myTabContent{{ loop.index }}">
                                             <div class="tab-pane fade show active" id="details{{ loop.index }}" role="tabpanel" aria-labelledby="details-tab{{ loop.index }}">
@@ -338,25 +340,27 @@
                                                 </div>
                                             </div>
                                             
-                                            {% for prompt_name, analysis in result.analysis_results.items() %}
-                                            <div class="tab-pane fade" id="{{ prompt_name|lower }}{{ loop.parent.index }}" role="tabpanel" aria-labelledby="{{ prompt_name|lower }}-tab{{ loop.parent.index }}">
-                                                {% if analysis.error %}
-                                                <div class="alert alert-danger">
-                                                    <h6>Error:</h6>
-                                                    <p>{{ analysis.error }}</p>
+                                            {% if result.analysis_results is defined and result.analysis_results %}
+                                                {% for prompt_name, analysis in result.analysis_results.items() %}
+                                                <div class="tab-pane fade" id="{{ prompt_name|lower }}{{ loop.parent.index }}" role="tabpanel" aria-labelledby="{{ prompt_name|lower }}-tab{{ loop.parent.index }}">
+                                                    {% if analysis.error %}
+                                                    <div class="alert alert-danger">
+                                                        <h6>Error:</h6>
+                                                        <p>{{ analysis.error }}</p>
+                                                    </div>
+                                                    {% else %}
+                                                    <div class="d-flex justify-content-between mb-2">
+                                                        <span class="badge bg-info text-dark">Model: {{ analysis.model }}</span>
+                                                        <span class="badge bg-secondary">{{ analysis.tokens }} tokens</span>
+                                                        <span class="badge bg-light text-dark">{{ analysis.processing_time|round(2) }} seconds</span>
+                                                    </div>
+                                                    <div class="border p-3 bg-light">
+                                                        {{ analysis.analysis|safe|nl2br }}
+                                                    </div>
+                                                    {% endif %}
                                                 </div>
-                                                {% else %}
-                                                <div class="d-flex justify-content-between mb-2">
-                                                    <span class="badge bg-info text-dark">Model: {{ analysis.model }}</span>
-                                                    <span class="badge bg-secondary">{{ analysis.tokens }} tokens</span>
-                                                    <span class="badge bg-light text-dark">{{ analysis.processing_time|round(2) }} seconds</span>
-                                                </div>
-                                                <div class="border p-3 bg-light">
-                                                    {{ analysis.analysis|safe|nl2br }}
-                                                </div>
-                                                {% endif %}
-                                            </div>
-                                            {% endfor %}
+                                                {% endfor %}
+                                            {% endif %}
                                         </div>
                                     </div>
                                     <div class="modal-footer">
