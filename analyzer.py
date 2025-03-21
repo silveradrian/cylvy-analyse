@@ -82,7 +82,7 @@ class AsyncAdvancedRateLimiter:
         logger.info(f"Async rate limiter initialized: {rate_limit_per_minute} requests/minute")
     
     async def __aenter__(self):
-        """Acquire permission to proceed - always succeeds to avoid blocking operations"""
+        """Always allow operations to proceed without blocking"""
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -96,59 +96,66 @@ class ContentAnalyzer:
     
     def __init__(self):
         """Initialize the content analyzer."""
-        self.openai_client = client
-        self.async_openai_client = async_client
-        
-        # Get API keys with enhanced debugging
-        self.scrapingbee_api_key = os.environ.get("SCRAPINGBEE_API_KEY", "")
-        logger.info(f"Environment variables loaded. ScrapingBee API key present: {bool(self.scrapingbee_api_key)}")
-        
-        if not self.scrapingbee_api_key:
-            # Try alternative ways to get the API key
+        try:
+            # Try to load environment variables from .env file
             try:
-                # Try reading from .env file directly
                 from dotenv import load_dotenv
-                load_dotenv(override=True)  # Force reload of .env file
-                self.scrapingbee_api_key = os.environ.get("SCRAPINGBEE_API_KEY", "")
-                logger.info(f"Attempted to reload .env file. ScrapingBee API key present now: {bool(self.scrapingbee_api_key)}")
+                load_dotenv(override=True)
+                logger.info("Loaded environment from .env file")
             except ImportError:
-                logger.warning("python-dotenv not installed, can't reload .env file")
-        
-        if not self.scrapingbee_api_key:
-            logger.warning("SCRAPINGBEE_API_KEY not found in environment variables!")
-            # For debugging, list all environment variables (without values)
-            logger.debug(f"Available environment variables: {list(os.environ.keys())}")
-        else:
-            logger.info("ScrapingBee API key found with length: " + str(len(self.scrapingbee_api_key)))
-        
-        # Create client even if API key is empty - we'll check before using
-        self.scrapingbee_client = ScrapingBeeClient(api_key=self.scrapingbee_api_key)
-        
-        # Set up rate limiters for different API calls
-        openai_rate_limit = int(os.environ.get("OPENAI_RATE_LIMIT", "60"))
-        scrapingbee_rate_limit = int(os.environ.get("SCRAPINGBEE_RATE_LIMIT", "50"))
-        
-        self.openai_rate_limiter = AdvancedRateLimiter(openai_rate_limit)
-        self.async_openai_rate_limiter = AsyncAdvancedRateLimiter(openai_rate_limit)
-        self.scrapingbee_rate_limiter = AdvancedRateLimiter(scrapingbee_rate_limit)
-        self.async_scrapingbee_rate_limiter = AsyncAdvancedRateLimiter(scrapingbee_rate_limit)
-        
-        logger.info(f"Content analyzer initialized with advanced rate limiters")
-        logger.info(f"OpenAI rate limit: {openai_rate_limit} requests/minute")
-        logger.info(f"ScrapingBee rate limit: {scrapingbee_rate_limit} requests/minute")
+                logger.warning("python-dotenv not installed, skipping .env loading")
+            
+            # Get API keys
+            self.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+            self.scrapingbee_api_key = os.environ.get("SCRAPINGBEE_API_KEY", "")
+            
+            # Log API key status
+            if not self.openai_api_key:
+                logger.error("OPENAI_API_KEY not found in environment variables!")
+                # List environment vars for debugging (omitting actual values)
+                env_vars = [k for k in os.environ.keys() if 'API' in k or 'KEY' in k]
+                logger.info(f"Available environment variables: {env_vars}")
+            else:
+                logger.info(f"OpenAI API key found (length: {len(self.openai_api_key)})")
+            
+            if not self.scrapingbee_api_key:
+                logger.warning("SCRAPINGBEE_API_KEY not found in environment variables!")
+            else:
+                logger.info(f"ScrapingBee API key found (length: {len(self.scrapingbee_api_key)})")
+            
+            # Initialize OpenAI clients
+            self.openai_client = OpenAI(api_key=self.openai_api_key)
+            self.async_openai_client = AsyncOpenAI(api_key=self.openai_api_key)
+            
+            # Initialize ScrapingBee client
+            self.scrapingbee_client = ScrapingBeeClient(api_key=self.scrapingbee_api_key)
+            
+            # Set up rate limiters with simplified implementations
+            openai_rate_limit = int(os.environ.get("OPENAI_RATE_LIMIT", "60"))
+            scrapingbee_rate_limit = int(os.environ.get("SCRAPINGBEE_RATE_LIMIT", "50"))
+            
+            self.openai_rate_limiter = AdvancedRateLimiter(openai_rate_limit)
+            self.async_openai_rate_limiter = AsyncAdvancedRateLimiter(openai_rate_limit)
+            self.scrapingbee_rate_limiter = AdvancedRateLimiter(scrapingbee_rate_limit)
+            self.async_scrapingbee_rate_limiter = AsyncAdvancedRateLimiter(scrapingbee_rate_limit)
+            
+            logger.info(f"Content analyzer initialized with advanced rate limiters")
+            logger.info(f"OpenAI API key present: {bool(self.openai_api_key)}")
+            logger.info(f"OpenAI rate limit: {openai_rate_limit} requests/minute")
+            logger.info(f"ScrapingBee rate limit: {scrapingbee_rate_limit} requests/minute")
+            
+        except Exception as e:
+            logger.error(f"Error initializing ContentAnalyzer: {str(e)}")
+            # Still create default rate limiters even if initialization fails
+            self.openai_rate_limiter = AdvancedRateLimiter(60)
+            self.async_openai_rate_limiter = AsyncAdvancedRateLimiter(60)
+            self.scrapingbee_rate_limiter = AdvancedRateLimiter(50)
+            self.async_scrapingbee_rate_limiter = AsyncAdvancedRateLimiter(50)
     
     async def scrape_url_async(self, url: str, content_type: str = "html", 
-                        force_browser: bool = False) -> Dict[str, Any]:
+                    force_browser: bool = False) -> Dict[str, Any]:
         """
         Asynchronously scrape content from a URL using ScrapingBee's API.
-        
-        Args:
-            url: URL to scrape
-            content_type: Content type (html, pdf, etc.)
-            force_browser: Whether to force browser-based scraping
-            
-        Returns:
-            Dictionary containing the scraped content
         """
         try:
             logger.info(f"Async scraping URL with ScrapingBee: {url}")
@@ -162,9 +169,14 @@ class ContentAnalyzer:
                     "status": "error"
                 }
             
-            # Check for API key before proceeding
-            if not self.scrapingbee_api_key:
-                logger.error("Missing ScrapingBee API key")
+            # Reload the API key each time
+            scrapingbee_api_key = os.environ.get("SCRAPINGBEE_API_KEY", "")
+            
+            # Create a fresh client instance for this request
+            scrapingbee_client = ScrapingBeeClient(api_key=scrapingbee_api_key)
+            
+            if not scrapingbee_api_key:
+                logger.error(f"Missing ScrapingBee API key for {url}")
                 return {
                     "error": "ScrapingBee API key not configured",
                     "url": url,
@@ -173,26 +185,20 @@ class ContentAnalyzer:
             
             start_time = time.time()
             
-            # Use the async rate limiter for ScrapingBee
-            async with self.async_scrapingbee_rate_limiter:
-                # Since ScrapingBee doesn't have a native async client,
-                # we'll use a ThreadPoolExecutor to avoid blocking
-                with ThreadPoolExecutor() as executor:
-                    loop = asyncio.get_event_loop()
-                    
-                    # Log the exact request being made
-                    logger.debug(f"Making ScrapingBee request to {url} with API key length: {len(self.scrapingbee_api_key)}")
-                    
-                    response = await loop.run_in_executor(
-                        executor,
-                        lambda: self.scrapingbee_client.get(
-                            url,
-                            params={
-                                'render_js': 'true' if force_browser else 'false',
-                                'premium_proxy': 'true' if force_browser else 'false'
-                            }
-                        )
-                    )
+            # Skip the rate limiter and execute directly
+            # Use ThreadPoolExecutor since ScrapingBee client is not async
+            with ThreadPoolExecutor() as executor:
+                loop = asyncio.get_event_loop()
+                
+                params = {
+                    "render_js": "true" if force_browser else "false",
+                    "premium_proxy": "true" if force_browser else "false"
+                }
+                
+                response = await loop.run_in_executor(
+                    executor,
+                    lambda: scrapingbee_client.get(url, params=params)
+                )
             
             duration = time.time() - start_time
             
@@ -433,12 +439,27 @@ class ContentAnalyzer:
             loop.close()
         return result
     
-    def analyze_with_prompt(self, content: str, prompt_config: Dict[str, Any], 
-                         company_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def analyze_with_prompt_async(self, content: str, prompt_config: Dict[str, Any], 
+                                  company_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
-        Synchronous wrapper for analyze_with_prompt_async.
+        Asynchronously analyze content using OpenAI model with a specific prompt configuration.
         """
         try:
+            start_time = time.time()
+            
+            # Force reload API key from environment before each API call
+            api_key = os.environ.get("OPENAI_API_KEY", self.openai_api_key)
+            
+            # Make a direct client instance for this specific call
+            async_client = AsyncOpenAI(api_key=api_key)
+            
+            if not api_key:
+                logger.error("OpenAI API key missing for API call")
+                return {
+                    "error": "OpenAI API key missing",
+                    "analysis": "Error: Could not complete analysis due to missing API key."
+                }
+                
             # Extract prompt configuration
             model = prompt_config.get('model', 'gpt-4')
             system_message = prompt_config.get('system_message', '')
@@ -462,10 +483,10 @@ class ContentAnalyzer:
             # Log the request details
             logger.info(f"Calling OpenAI API with model {model} - content length: {len(content)} chars")
             
-            # Use the rate limiter
-            with self.openai_rate_limiter:
-                # Call the OpenAI API
-                response = self.openai_client.chat.completions.create(
+            # Skip rate limiter and make direct API call
+            try:
+                # Call the OpenAI API asynchronously
+                response = await async_client.chat.completions.create(
                     model=model,
                     messages=[
                         {"role": "system", "content": system_message},
@@ -474,27 +495,39 @@ class ContentAnalyzer:
                     temperature=temperature,
                     max_tokens=max_tokens
                 )
-            
-            # Calculate token usage
-            prompt_tokens = response.usage.prompt_tokens
-            completion_tokens = response.usage.completion_tokens
-            total_tokens = response.usage.total_tokens
-            
-            # Extract the response
-            analysis_text = response.choices[0].message.content
-            
-            logger.info(f"Token usage: {total_tokens} tokens")
-            
-            return {
-                "analysis": analysis_text,
-                "model": model,
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens
-            }
+                
+                # Calculate token usage
+                prompt_tokens = response.usage.prompt_tokens
+                completion_tokens = response.usage.completion_tokens
+                total_tokens = response.usage.total_tokens
+                
+                # Extract the response
+                analysis_text = response.choices[0].message.content
+                
+                # Calculate processing time
+                processing_time = time.time() - start_time
+                
+                logger.info(f"OpenAI API call completed in {processing_time:.2f}s")
+                logger.info(f"Token usage: {total_tokens} tokens")
+                
+                return {
+                    "analysis": analysis_text,
+                    "model": model,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "processing_time": processing_time
+                }
+                
+            except Exception as api_error:
+                logger.error(f"Error calling OpenAI API: {str(api_error)}")
+                return {
+                    "error": f"API error: {str(api_error)}",
+                    "analysis": "Error: Could not complete analysis due to API error."
+                }
             
         except Exception as e:
-            logger.error(f"Error in OpenAI API call: {str(e)}")
+            logger.error(f"Error in async OpenAI API call: {str(e)}")
             return {
                 "error": str(e),
                 "analysis": "Error: Could not complete analysis."

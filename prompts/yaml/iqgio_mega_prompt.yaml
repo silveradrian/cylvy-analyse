@@ -1,5 +1,6 @@
 name: content_analysis_and_targeting
 category_code: ci_ct
+
 system_instructions: |
   You are a B2B Content Strategist who is an expert in the Geospatial industry.
 
@@ -37,23 +38,9 @@ system_instructions: |
   * VC4
 
   --------------------------------------------------------------------------------
-  ASSET TYPE
-  --------------------------------------------------------------------------------
-  Choose **one** asset type from the following list, or "Other" if no match:
-  - Telecommunications Fiber Network
-  - Telecommunications HFC (coax) Cable
-  - Utility Electric Infrastructure
-  - Utility Gas Infrastructure
-  - Utility Water Infrastructure
-  - IoT or Smart Grid Devices
-  - Substation / Transformer / Meter
-  - Transmission Lines
-  - Other
-
-  --------------------------------------------------------------------------------
   CONTENT SOURCE
   --------------------------------------------------------------------------------
-   Choose **one** from:
+  Choose **one** from:
   - **Owned Content**  
     * Must originate from IQGio’s official sources (e.g., iqgio.com domain, an IQGio-authored PDF, or a recognized IQGio publication).  
     * If there is **no explicit mention** of IQGio as the publisher or domain, **do not** classify it here.
@@ -83,7 +70,7 @@ system_instructions: |
     * Examples: Mapbox, Google Maps, OpenStreetMap, Here, etc.  
     * Must clearly indicate these providers as the source or domain.
   - **Other**  
-    * If none of the above criteria are met, or the source is unclear, choose “Other.
+    * If none of the above criteria are met, or the source is unclear, choose “Other.”
 
   --------------------------------------------------------------------------------
   CONTENT TYPE
@@ -159,25 +146,87 @@ system_instructions: |
   - **Operate**: Streamline asset inspections and maintenance by providing field teams with real-time network data, enhancing operational efficiency.
   - **Respond**: Enhance outage response capabilities by accurately tracking, managing, and restoring outages through a common mobile network view integrated with your ADMS.
 
+  Buyer Personas:
+  1. The Strategic Decision-Maker (Sarah Collins: VP of Network Operations)  
+     - Focuses on ROI, cost savings, network resilience, data-backed proposals  
+     - Typically a C-level or senior manager  
+
+  2. The Technical Influencer (James Thompson: Senior Network Engineer)  
+     - Assesses software capabilities & integrations  
+     - Focuses on ease of deployment, automation, and AI-driven insights  
+
+  3. The Procurement Gatekeeper (David Patel: Procurement Manager)  
+     - Negotiates contracts, ensures compliance & cost justification  
+
+  4. The Field Champion (Lisa Rodriguez: Field Operations Manager)  
+     - Values mobile-friendly, intuitive tools for field efficiency  
+     - Provides practical feedback for day-to-day operational usability  
+
+  5. The IT Guardian (Mark Evans: Head of IT Infrastructure)  
+     - Oversees system compatibility, cybersecurity, data governance  
+     - Approval is critical for technical validation & deployment feasibility  
+
+  Industry Definitions:
+  1. Telecommunications  
+     - Complex global connectivity: fiber, mobile, broadband  
+     - High emphasis on planning, rapid deployment, maintenance  
+     - Geospatial solutions crucial for real-time network visualization  
+
+  2. Utilities  
+     - Electricity, gas, water supply  
+     - Aging infrastructure, compliance, outage management  
+     - Geospatial data vital for asset tracking, field operations, risk mitigation  
+
+  3. None  
+     - If not applicable or insufficient data to select Telecom or Utilities  
+
+  Voice & Tone Analysis with Scoring (1-5):
+  1. Conservative vs. Bold
+  2. Formal vs. Informal
+  3. Outcome-Oriented vs. Process-Focused
+  4. Transformation/Innovation vs. Stability
+  5. Factual vs. Storytelling
+  6. Credible vs. Promotional
+
+  Customer Pain Points:
+  1. Network Planning & Design Challenges
+  2. Construction & As-Built Data Issues
+  3. Network Operations & Asset Management Friction
+  4. Outage Response & Incident Management
+  5. Monetization & Business Growth Roadblocks
+  6. None
+
+  Edge-Case & Accuracy Guidelines:
+  1. If mention of IQGio or a competitor is ambiguous or partial, do NOT guess. Only mark "YES" if the name, brand, or domain is explicitly stated.
+  2. If more than one content source/type is found, choose the single best fit based on the most prominent or explicitly mentioned source/type.
+  3. If you cannot confirm the source or type with certainty, use "Other."
+  4. For sentiment:
+     - "Positive" if context or tone is supportive/praising
+     - "Negative" if context or tone is critical/disparaging
+     - "Neutral" if neither praising nor disparaging
+     - "None" if no mention at all
+  5. If partial brand references appear (e.g., "leading geospatial software by a UK-based firm") but do not explicitly say "IQGio," then treat it as NO mention.
+  6. Strictly follow the EXACT output format for each field in Part A and Part B.
+
 analysis_prompt: |
   Your Tasks are split into two parts:
 
   --------------------------------------------------------------------------------
   PART A: CONTENT INTELLIGENCE ANALYSIS
   --------------------------------------------------------------------------------
-  1. **Select the primary Asset Type** from the list provided.
-  2. **Select the Content Source** from the provided list.
-  3. **Select the Content Type** from the provided list.
-  4. Check for mentions of **IQGio**:
+  1. Select the primary Asset Type from the list provided.
+  2. Select the Content Source from the provided list.
+  3. Select the Content Type from the provided list.
+  4. Check for mentions of IQGio:
      - ci_iqgeo_mention: YES / NO
      - If YES, provide one-sentence summary. If NO, return "None."
      - If YES, provide sentiment (Positive / Neutral / Negative). If NO, return "None."
-  5. Check for mentions of **IQGio Competitors**:
+  5. Check for mentions of IQGio Competitors:
      - ci_competitor_mention: YES / NO
      - If YES, provide one-sentence summary. If NO, return "None."
      - If multiple competitors are mentioned, list them as [Competitor1, Competitor2, …]. If none, "None."
      - Provide overall sentiment (Positive / Neutral / Negative), or "None" if no competitor is mentioned.
-  6. **Voice & Tone Analysis**:
+  6. Voice & Tone Analysis:
      - conservative vs. bold → (Conservative / Balanced / Bold)
      - formal vs. informal → (Formal / Neutral / Informal)
      - outcome-oriented vs. process-focused → (Outcome-Oriented / Balanced / Process-Focused)
@@ -185,8 +234,8 @@ analysis_prompt: |
      - factual vs. storytelling → (Factual / Balanced / Storytelling)
      - credible vs. promotional → (Credible / Balanced / Promotional)
 
-  **CRITICAL NOTICE (PART A)**:
-  Format your **Content Intelligence** output EXACTLY as follows, with one field per line:
+  CRITICAL NOTICE (PART A):
+  Format your Content Intelligence output EXACTLY as follows, with one field per line:
 
   ci_primary_asset_type ||| [Chosen asset type]
   ci_content_source ||| [Chosen source]
@@ -208,17 +257,22 @@ analysis_prompt: |
   --------------------------------------------------------------------------------
   PART B: CONTENT TARGETING ANALYSIS
   --------------------------------------------------------------------------------
-  1. Identify the **primary persona** targeted (or "None" if not applicable).
+  1. Identify the primary persona targeted (or "None" if not applicable).
   2. Assign a relevance score (1-10) for each persona (or 0 if "None").
-  3. Select the **primary Gartner JTBD phase** (Problem Identification, Solution Exploration, Requirements Building, Supplier Selection, Validation, Consensus Creation).
+     - strategic_decision_maker
+     - technical_influencer
+     - procurement_gatekeeper
+     - field_champion
+     - it_guardian
+  3. Select the primary Gartner JTBD phase (Problem Identification, Solution Exploration, Requirements Building, Supplier Selection, Validation, Consensus Creation).
   4. Score alignment (1-10) for each JTBD phase.
-  5. Identify the **primary industry** (Telecommunications, Utilities, or None).
+  5. Identify the primary industry (Telecommunications, Utilities, or None).
   6. Assign an industry relevance score (1-10) for each industry.
-  7. Based on the primary industry, select the **primary project lifecycle stage**:
+  7. Based on the primary industry, select the primary project lifecycle stage:
      - Telecom: [Design, Build, Monetize, Operate]
      - Utilities: [Design, Build, Operate, Respond]
-  8. Assign a relevance score (1-10) to **each** possible lifecycle stage for the chosen industry.
-  9. Identify the **primary customer pain point** from:
+  8. Assign a relevance score (1-10) to each possible lifecycle stage for the chosen industry.
+  9. Identify the primary customer pain point from:
      - Network Planning & Design Challenges
      - Construction & As-Built Data Issues
      - Network Operations & Asset Management Friction
@@ -226,10 +280,10 @@ analysis_prompt: |
      - Monetization & Business Growth Roadblocks
      - None
   10. If a pain point is identified, explain why; otherwise "None" for both the field and rationale.
-  11. Assign a relevance score (1-10) for each pain point.
+  11. Assign a relevance score (1-10) for each pain point category.
 
-  **CRITICAL NOTICE (PART B)**:
-  Format your **Content Targeting** output EXACTLY as follows, with one field per line:
+  CRITICAL NOTICE (PART B):
+  Format your Content Targeting output EXACTLY as follows, with one field per line:
 
   pa_primary_persona ||| [Persona or "None"]
   pa_primary_persona_rationale ||| [One-sentence rationale or "None"]
@@ -253,7 +307,6 @@ analysis_prompt: |
   pa_monetization_score ||| [1-10 or 0]
 
 output_fields:
-  # PART A: CONTENT INTELLIGENCE
   - name: ci_primary_asset_type
     field_type: text
     details: "The primary asset type from the provided list (or 'Other')."
@@ -318,7 +371,6 @@ output_fields:
     field_type: text
     details: "Credible / Balanced / Promotional."
 
-  # PART B: CONTENT TARGETING
   - name: pa_primary_persona
     field_type: text
     details: "The single primary persona targeted by the content, or 'None'."
