@@ -258,15 +258,18 @@ class DatabaseManager:
             title = result.get('title', '')
             status = result.get('status', 'unknown')
             content_type = result.get('content_type', 'unknown')
-            word_count = result.get('word_count', 0)
-            api_tokens = result.get('api_tokens', 0)
+            word_count = int(result.get('word_count', 0) or 0)  # Convert None to 0
+            api_tokens = int(result.get('api_tokens', 0) or 0)  # Convert None to 0
             error = result.get('error', '')
             prompt_name = result.get('prompt_name', '')
             
-            # Format data as JSON
-            data = result.get('data', {})
-            if data:
-                data_json = json.dumps(data)
+            # Format analysis_results or data as JSON
+            if 'analysis_results' in result and result['analysis_results']:
+                analysis_results = result['analysis_results']
+                data_json = json.dumps(analysis_results)
+            elif 'data' in result:
+                data = result.get('data', {})
+                data_json = json.dumps(data) if data else '{}'
             else:
                 data_json = '{}'
             

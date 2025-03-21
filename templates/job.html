@@ -120,11 +120,11 @@
                         </tr>
                         <tr>
                             <th>Success:</th>
-                            <td>{{ metrics.successful_results }}</td>
+                            <td>{{ metrics.successful_results|default(0) }}</td>
                         </tr>
                         <tr>
                             <th>Errors:</th>
-                            <td>{{ metrics.failed_results }}</td>
+                            <td>{{ metrics.failed_results|default(0) }}</td>
                         </tr>
                     </table>
 
@@ -155,15 +155,21 @@
                                     <h6 class="card-title text-muted mb-3">Processing Stats</h6>
                                     <div class="d-flex justify-content-between mb-2">
                                         <span>Total Words:</span>
-                                        <strong>{{ metrics.total_words }}</strong>
+                                        <strong>{{ metrics.total_words|default(0) }}</strong>
                                     </div>
                                     <div class="d-flex justify-content-between mb-2">
                                         <span>Successful URLs:</span>
-                                        <strong>{{ metrics.successful_results }}/{{ job.total_urls }}</strong>
+                                        <strong>{{ metrics.successful_results|default(0) }}/{{ job.total_urls|default(0) }}</strong>
                                     </div>
                                     <div class="d-flex justify-content-between">
                                         <span>Failure Rate:</span>
-                                        <strong>{{ ((metrics.failed_results / job.total_urls) * 100)|round(1) if job.total_urls else 0 }}%</strong>
+                                        <strong>
+                                            {% if metrics.failed_results is defined and job.total_urls and job.total_urls > 0 %}
+                                                {{ ((metrics.failed_results / job.total_urls) * 100)|round(1) }}%
+                                            {% else %}
+                                                0%
+                                            {% endif %}
+                                        </strong>
                                     </div>
                                 </div>
                             </div>
@@ -174,15 +180,27 @@
                                     <h6 class="card-title text-muted mb-3">API Usage</h6>
                                     <div class="d-flex justify-content-between mb-2">
                                         <span>Total API Tokens:</span>
-                                        <strong>{{ metrics.total_tokens }}</strong>
+                                        <strong>{{ metrics.total_tokens|default(0) }}</strong>
                                     </div>
                                     <div class="d-flex justify-content-between mb-2">
                                         <span>Avg Tokens / URL:</span>
-                                        <strong>{{ (metrics.total_tokens / metrics.successful_results)|round|int if metrics.successful_results else 0 }}</strong>
+                                        <strong>
+                                            {% if metrics.total_tokens is defined and metrics.successful_results is defined and metrics.successful_results > 0 %}
+                                                {{ (metrics.total_tokens / metrics.successful_results)|round|int }}
+                                            {% else %}
+                                                0
+                                            {% endif %}
+                                        </strong>
                                     </div>
                                     <div class="d-flex justify-content-between">
                                         <span>Estimated Cost:</span>
-                                        <strong>${{ (metrics.total_tokens / 1000 * 0.02)|round(2) }}</strong>
+                                        <strong>
+                                            {% if metrics.total_tokens is defined %}
+                                                ${{ ((metrics.total_tokens / 1000) * 0.02)|round(2) }}
+                                            {% else %}
+                                                $0.00
+                                            {% endif %}
+                                        </strong>
                                     </div>
                                 </div>
                             </div>
@@ -202,15 +220,21 @@
                             <div class="list-group">
                                 <div class="list-group-item d-flex justify-content-between align-items-center">
                                     Successful
-                                    <span class="badge bg-success rounded-pill">{{ metrics.successful_results }}</span>
+                                    <span class="badge bg-success rounded-pill">{{ metrics.successful_results|default(0) }}</span>
                                 </div>
                                 <div class="list-group-item d-flex justify-content-between align-items-center">
                                     Scraping Errors
-                                    <span class="badge bg-danger rounded-pill">{{ metrics.scrape_errors }}</span>
+                                    <span class="badge bg-danger rounded-pill">{{ metrics.scrape_errors|default(0) }}</span>
                                 </div>
                                 <div class="list-group-item d-flex justify-content-between align-items-center">
                                     Analysis Errors
-                                    <span class="badge bg-warning text-dark rounded-pill">{{ metrics.failed_results - metrics.scrape_errors }}</span>
+                                    <span class="badge bg-warning text-dark rounded-pill">
+                                        {% if metrics.failed_results is defined and metrics.scrape_errors is defined %}
+                                            {{ metrics.failed_results - metrics.scrape_errors }}
+                                        {% else %}
+                                            0
+                                        {% endif %}
+                                    </span>
                                 </div>
                             </div>
                         </div>
@@ -259,8 +283,8 @@
                                 {% endif %}
                             </td>
                             <td class="text-truncate" style="max-width: 200px;">{{ result.title }}</td>
-                            <td>{{ result.word_count }}</td>
-                            <td>{{ result.api_tokens }}</td>
+                            <td>{{ result.word_count|default(0) }}</td>
+                            <td>{{ result.api_tokens|default(0) }}</td>
                             <td>
                                 <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#resultModal{{ loop.index }}">
                                     <i class="bi bi-eye"></i> View
@@ -313,19 +337,31 @@
                                                             </tr>
                                                             <tr>
                                                                 <th>Word Count:</th>
-                                                                <td>{{ result.word_count }}</td>
+                                                                <td>{{ result.word_count|default(0) }}</td>
                                                             </tr>
                                                             <tr>
                                                                 <th>API Tokens:</th>
-                                                                <td>{{ result.api_tokens }}</td>
+                                                                <td>{{ result.api_tokens|default(0) }}</td>
                                                             </tr>
                                                             <tr>
                                                                 <th>Scrape Time:</th>
-                                                                <td>{{ result.scrape_time|round(2) }} seconds</td>
+                                                                <td>
+                                                                    {% if result.scrape_time is defined and result.scrape_time is not none %}
+                                                                        {{ result.scrape_time|round(2) }} seconds
+                                                                    {% else %}
+                                                                        N/A
+                                                                    {% endif %}
+                                                                </td>
                                                             </tr>
                                                             <tr>
                                                                 <th>Analysis Time:</th>
-                                                                <td>{{ result.analysis_time|round(2) }} seconds</td>
+                                                                <td>
+                                                                    {% if result.analysis_time is defined and result.analysis_time is not none %}
+                                                                        {{ result.analysis_time|round(2) }} seconds
+                                                                    {% else %}
+                                                                        N/A
+                                                                    {% endif %}
+                                                                </td>
                                                             </tr>
                                                         </table>
                                                     </div>
@@ -350,12 +386,18 @@
                                                     </div>
                                                     {% else %}
                                                     <div class="d-flex justify-content-between mb-2">
-                                                        <span class="badge bg-info text-dark">Model: {{ analysis.model }}</span>
-                                                        <span class="badge bg-secondary">{{ analysis.tokens }} tokens</span>
-                                                        <span class="badge bg-light text-dark">{{ analysis.processing_time|round(2) }} seconds</span>
+                                                        <span class="badge bg-info text-dark">Model: {{ analysis.model|default('Unknown') }}</span>
+                                                        <span class="badge bg-secondary">{{ analysis.tokens|default(0) }} tokens</span>
+                                                        <span class="badge bg-light text-dark">
+                                                            {% if analysis.processing_time is defined and analysis.processing_time is not none %}
+                                                                {{ analysis.processing_time|round(2) }} seconds
+                                                            {% else %}
+                                                                0 seconds
+                                                            {% endif %}
+                                                        </span>
                                                     </div>
                                                     <div class="border p-3 bg-light">
-                                                        {{ analysis.analysis|safe|nl2br }}
+                                                        {{ analysis.analysis|default('')|safe|nl2br }}
                                                     </div>
                                                     {% endif %}
                                                 </div>

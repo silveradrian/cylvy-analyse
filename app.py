@@ -442,6 +442,17 @@ def job_status(job_id):
         logger.error(f"Error displaying job status: {str(e)}")
         return render_template('error.html', error=f"Error loading job: {str(e)}"), 500
 
+@app.template_filter('safe_round')
+def safe_round(value, precision=0):
+    """Safely round a value, handling None and undefined values."""
+    try:
+        if value is None:
+            return 0
+        return round(float(value), precision)
+    except (TypeError, ValueError):
+        return 0
+
+
 @app.route('/api/job/<job_id>')
 def api_job_status(job_id):
     """Get job status as JSON."""
