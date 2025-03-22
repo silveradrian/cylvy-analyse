@@ -231,7 +231,7 @@ analysis_prompt: |
   3. Provide sentiment and concise context summaries for mentions.
   4. Analyze voice and tone using provided scales.
 
-  Format EXACTLY:
+  CRITITAL FORMAT EXACTLY OTHERWISE YOU WILL CAUSE SYSTEM FAILURE:
 
   primary_asset_type ||| [Chosen asset type]
   content_source ||| [Chosen source]
@@ -259,7 +259,7 @@ analysis_prompt: |
   4. Choose and justify lifecycle stage relevance based on the industry.
   5. Identify primary customer pain point and rationale.
 
-  Format EXACTLY:
+  CRITITAL FORMAT EXACTLY OTHERWISE YOU WILL CAUSE SYSTEM FAILURE:
 
   primary_persona ||| [Persona or "None"]
   primary_persona_rationale ||| [One-sentence rationale or "None"]
@@ -283,8 +283,8 @@ analysis_prompt: |
   monetization_score ||| [1-10 or 0]
 
 delimiter: "|||"
-temperature: 0.3
-max_tokens: 2000
+temperature: 0.1
+max_tokens: 15000
 
 output_fields:
   - name: primary_asset_type

@@ -2,6 +2,7 @@ from __future__ import annotations  # This must be the first import!
 
 import asyncio
 import logging
+import async_timeout
 import time
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
