@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSV Debug Tool</title>
+    <style>
+        body { font-family: Arial; max-width: 800px; margin: 0 auto; padding: 20px; }
+        pre { background: #f5f5f5; padding: 10px; overflow: auto; }
+        .good { color: green; }
+        .bad { color: red; }
+    </style>
+</head>
+<body>
+    <h1>CSV Upload Debug Tool</h1>
+    <form id="uploadForm">
+        <input type="file" id="csvFile" accept=".csv">
+        <button type="submit">Test CSV</button>
+    </form>
+    <div id="results" style="margin-top: 20px;"></div>
+
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const results = document.getElementById('results');
+            results.innerHTML = '<p>Testing CSV...</p>';
+            
+            const fileInput = document.getElementById('csvFile');
+            if (!fileInput.files.length) {
+                results.innerHTML = '<p class="bad">Please select a CSV file</p>';
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            
+            try {
+                const response = await fetch('/api/debug/csv-upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                let html = '<h2>Debug Results</h2>';
+                if (data.success) {
+                    html += `<p class="good">CSV parsed successfully!</p>`;
+                    html += `<h3>Headers Found:</h3><pre>${JSON.stringify(data.csv_headers, null, 2)}</pre>`;
+                    html += `<h3>CSV Preview:</h3><pre>${data.csv_preview}</pre>`;
+                    html += `<h3>URLs Found: ${data.parsed_urls}</h3>`;
+                    html += `<h3>URL Validation:</h3><ul>`;
+                    data.validation_results.forEach(result => {
+                        html += `<li class="${result.valid ? 'good' : 'bad'}">${result.url}: ${result.valid ? 'VALID' : 'INVALID'}</li>`;
+                    });
+                    html += '</ul>';
+                    html += `<h3>First URL Data:</h3><pre>${JSON.stringify(data.first_url_data, null, 2)}</pre>`;
+                } else {
+                    html += `<p class="bad">Error: ${data.error}</p>`;
+                }
+                
+                results.innerHTML = html;
+            } catch (error) {
+                results.innerHTML = `<p class="bad">Error: ${error.message}</p>`;
+            }
+        });
+    </script>
+</body>
+</html>

@@ -401,19 +401,33 @@ def parse_csv_file(file):
     logger = logging.getLogger("app")
     
     url_data_list = []
-    content = file.read().decode('utf-8')
+    content = file.read().decode('utf-8-sig')  # Use utf-8-sig to handle BOM character
     
-    # Log CSV content for debugging
-    logger.info(f"CSV content first 100 chars: {content[:100]}")
-    
+    # Get reader
     reader = csv.DictReader(StringIO(content))
-    row_count = 0
     
+    # Find the URL column - handle BOM character
+    url_column = None
+    for header in reader.fieldnames:
+        if header.strip('\ufeff') == 'url':  # Strip BOM character
+            url_column = header
+            break
+    
+    if not url_column:
+        logger.error(f"No URL column found in CSV. Headers: {reader.fieldnames}")
+        return []
+    
+    # Reset reader
+    reader = csv.DictReader(StringIO(content))
+    
+    # Process rows
+    row_count = 0
     for row in reader:
         row_count += 1
-        # Check if URL exists and is not empty
-        if 'url' in row and row['url'] and row['url'].strip():
-            url = row['url'].strip()  # Remove any whitespace
+        
+        # Get URL using the correct column name (with or without BOM)
+        if url_column in row and row[url_column] and row[url_column].strip():
+            url = row[url_column].strip()
             
             # Create URL data with basic fields
             url_data = {'url': url}
@@ -421,32 +435,32 @@ def parse_csv_file(file):
             # Extract company info if available
             company_info = {}
             
-            # Look for company_ prefixed fields or regular names
-            field_mapping = {
-                'company_name': 'name',
-                'name': 'name',
-                'company_description': 'description', 
-                'description': 'description',
-                'company_industry': 'industry',
-                'industry': 'industry',
-                'company_revenue': 'revenue',
-                'revenue': 'revenue'
-            }
+            # Map CSV fields to expected fields, handling potential BOM
+            field_pairs = [
+                ('company_name', 'name'),
+                ('company_description', 'description'),
+                ('company_industry', 'industry'), 
+                ('company_revenue', 'revenue')
+            ]
             
-            for csv_field, internal_field in field_mapping.items():
-                if csv_field in row and row[csv_field]:
-                    company_info[internal_field] = row[csv_field]
+            for csv_field, internal_field in field_pairs:
+                # Look for the field name with potential BOM
+                actual_field = None
+                for header in row.keys():
+                    if header.strip('\ufeff') == csv_field:
+                        actual_field = header
+                        break
+                
+                if actual_field and row[actual_field]:
+                    company_info[internal_field] = row[actual_field]
             
             # Handle industry field that may be in list format as string
             if 'industry' in company_info and isinstance(company_info['industry'], str):
-                # Try to parse as a list if it looks like one
                 if company_info['industry'].startswith('[') and company_info['industry'].endswith(']'):
                     try:
-                        # Extract items from list format string
-                        industry_str = company_info['industry'][1:-1]  # Remove [ ]
-                        # Split by comma, handling quotes
+                        # Extract from list format string
+                        industry_str = company_info['industry'][1:-1]
                         industries = re.findall(r"'([^']*)'|\"([^\"]*)\"", industry_str)
-                        # Flatten the results from findall
                         company_info['industry'] = [i[0] or i[1] for i in industries if i[0] or i[1]]
                     except Exception as e:
                         logger.warning(f"Error parsing industry list: {str(e)}")
@@ -456,27 +470,28 @@ def parse_csv_file(file):
                 url_data['company_info'] = company_info
             
             # Add content type if available
-            if 'content_type' in row and row['content_type']:
-                url_data['content_type'] = row['content_type']
+            content_type_col = None
+            for header in row.keys():
+                if header.strip('\ufeff') == 'content_type':
+                    content_type_col = header
+                    break
+                    
+            if content_type_col and row[content_type_col]:
+                url_data['content_type'] = row[content_type_col]
             
-            # Add force browser if available  
-            if 'force_browser' in row:
-                url_data['force_browser'] = str(row['force_browser']).lower() in ('true', 'yes', '1')
+            # Add browser flag if available
+            force_browser_col = None
+            for header in row.keys():
+                if header.strip('\ufeff') == 'force_browser':
+                    force_browser_col = header
+                    break
+                    
+            if force_browser_col:
+                url_data['force_browser'] = str(row[force_browser_col]).lower() in ('true', 'yes', '1')
             
             url_data_list.append(url_data)
     
-    logger.info(f"Parsed {row_count} rows from CSV, found {len(url_data_list)} valid URL entries")
-    
-    if len(url_data_list) == 0 and row_count > 0:
-        logger.warning("CSV had rows but no valid URLs were found!")
-        if row_count > 0:
-            # Log the first row for debugging
-            all_rows = list(csv.DictReader(StringIO(content)))
-            if all_rows:
-                logger.warning(f"First row keys: {list(all_rows[0].keys())}")
-                if 'url' in all_rows[0]:
-                    logger.warning(f"First URL value: '{all_rows[0]['url']}'")
-    
+    logger.info(f"Parsed {row_count} rows from CSV with BOM-aware parsing, found {len(url_data_list)} URLs")
     return url_data_list
 
 
@@ -767,14 +782,19 @@ os.makedirs(os.path.join(os.path.dirname(__file__), 'static'), exist_ok=True)
 def is_valid_url(url):
     """Check if a string is a valid URL."""
     import re
+    import logging
     
-    # Log the URL being validated for debugging
     logger = logging.getLogger("app")
-    logger.info(f"Validating URL: {url}")
     
     if not url or not isinstance(url, str):
-        logger.warning("URL is empty or not a string")
         return False
+    
+    # Remove any whitespace
+    url = url.strip()
+    
+    # Add http:// prefix if missing
+    if not url.startswith(('http://', 'https://')):
+        url = f"https://{url}"
         
     # Common URL validation pattern
     pattern = re.compile(
@@ -788,21 +808,13 @@ def is_valid_url(url):
     is_valid = bool(re.match(pattern, url))
     
     if not is_valid:
-        logger.warning(f"URL validation failed for: {url}")
+        logger.info(f"URL validation failed: {url}")
     
     return is_valid
 
-def get_status_description(status):
-    """Get a human-readable description for a job status."""
-    descriptions = {
-        'pending': 'Job is waiting to be processed.',
-        'running': 'Job is currently being processed.',
-        'completed': 'Job completed successfully.',
-        'completed_with_errors': 'Job completed but encountered some errors.',
-        'failed': 'Job failed to complete.',
-        'cancelled': 'Job was cancelled.'
-    }
-    return descriptions.get(status, f"Status: {status}")
+@app.route('/debug-csv')
+def debug_csv_page():
+    return render_template('debug.html')
 
 @app.route('/api/debug/parse-csv', methods=['POST'])
 def debug_parse_csv():
@@ -842,6 +854,58 @@ def debug_parse_csv():
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/debug/csv-upload', methods=['POST'])
+def debug_csv_upload():
+    """Debug endpoint for CSV upload issues."""
+    try:
+        import logging
+        logger = logging.getLogger("app")
+        
+        if 'file' not in request.files:
+            return jsonify({"error": "No file part"}), 400
+        
+        file = request.files['file']
+        
+        # Read and parse CSV
+        content = file.read().decode('utf-8')
+        file.seek(0)  # Rewind file
+        
+        # Get CSV headers
+        import csv
+        from io import StringIO
+        reader = csv.DictReader(StringIO(content))
+        headers = reader.fieldnames
+        
+        # Parse again to get URLs
+        file.seek(0)
+        url_data_list = parse_csv_file(file)
+        
+        # Validate each URL and collect results
+        validation_results = []
+        for item in url_data_list:
+            url = item.get('url', '')
+            is_valid = is_valid_url(url)
+            validation_results.append({
+                'url': url, 
+                'valid': is_valid
+            })
+        
+        # Return debug info
+        return jsonify({
+            "success": True,
+            "csv_headers": headers,
+            "csv_preview": content[:500],
+            "parsed_urls": len(url_data_list),
+            "validation_results": validation_results,
+            "first_url_data": url_data_list[0] if url_data_list else None
+        })
+    except Exception as e:
+        logger.exception("Error in debug endpoint")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
 if __name__ == '__main__':
