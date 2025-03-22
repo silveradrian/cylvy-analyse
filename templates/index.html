@@ -307,5 +307,49 @@
             loadingOverlay.appendChild(debugButton);
         }
     }, 5000);
+
+// Add this to the bottom of your existing scripts
+document.addEventListener('DOMContentLoaded', function() {
+    const fileTab = document.getElementById('file-tab');
+    const fileInput = document.getElementById('file');
+    
+    // When file tab is clicked, focus on file input
+    if (fileTab) {
+        fileTab.addEventListener('click', function() {
+            setTimeout(() => {
+                if (fileInput) fileInput.focus();
+            }, 100);
+        });
+    }
+    
+    // Make sure file uploads aren't blocked by text validation
+    const form = document.getElementById('analysisForm');
+    if (form) {
+        const originalSubmitHandler = form.onsubmit;
+        form.onsubmit = function(e) {
+            const activeTab = document.querySelector('.tab-pane.active');
+            const isFileTab = activeTab && activeTab.id === 'file-input';
+            
+            // If we have a file and we're on the file tab, allow form submission
+            if (isFileTab && fileInput && fileInput.files && fileInput.files.length > 0) {
+                console.log("File selected, allowing submission");
+                // Still need to check for prompt selection
+                const promptCheckboxes = document.querySelectorAll('input[name="prompts"]:checked');
+                if (promptCheckboxes.length === 0) {
+                    e.preventDefault();
+                    alert('Please select at least one analysis prompt.');
+                    return false;
+                }
+                return true;
+            }
+            
+            // Otherwise use the regular validation
+            if (originalSubmitHandler) {
+                return originalSubmitHandler.call(this, e);
+            }
+        };
+    }
+});
+
 </script>
 {% endblock %}

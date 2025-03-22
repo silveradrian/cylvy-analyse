@@ -395,34 +395,87 @@ def parse_csv_file(file):
     """Parse a CSV file for URLs with company context."""
     import csv
     from io import StringIO
+    import re
+    import logging
+    
+    logger = logging.getLogger("app")
     
     url_data_list = []
     content = file.read().decode('utf-8')
+    
+    # Log CSV content for debugging
+    logger.info(f"CSV content first 100 chars: {content[:100]}")
+    
     reader = csv.DictReader(StringIO(content))
+    row_count = 0
     
     for row in reader:
-        if 'url' in row:
-            url_data = {'url': row['url']}
+        row_count += 1
+        # Check if URL exists and is not empty
+        if 'url' in row and row['url'] and row['url'].strip():
+            url = row['url'].strip()  # Remove any whitespace
+            
+            # Create URL data with basic fields
+            url_data = {'url': url}
             
             # Extract company info if available
             company_info = {}
-            for key in ['company_name', 'company_description', 'industry', 'revenue']:
-                if key in row and row[key]:
-                    # Convert keys to match expected format
-                    company_key = key.replace('company_', '')
-                    company_info[company_key] = row[key]
+            
+            # Look for company_ prefixed fields or regular names
+            field_mapping = {
+                'company_name': 'name',
+                'name': 'name',
+                'company_description': 'description', 
+                'description': 'description',
+                'company_industry': 'industry',
+                'industry': 'industry',
+                'company_revenue': 'revenue',
+                'revenue': 'revenue'
+            }
+            
+            for csv_field, internal_field in field_mapping.items():
+                if csv_field in row and row[csv_field]:
+                    company_info[internal_field] = row[csv_field]
+            
+            # Handle industry field that may be in list format as string
+            if 'industry' in company_info and isinstance(company_info['industry'], str):
+                # Try to parse as a list if it looks like one
+                if company_info['industry'].startswith('[') and company_info['industry'].endswith(']'):
+                    try:
+                        # Extract items from list format string
+                        industry_str = company_info['industry'][1:-1]  # Remove [ ]
+                        # Split by comma, handling quotes
+                        industries = re.findall(r"'([^']*)'|\"([^\"]*)\"", industry_str)
+                        # Flatten the results from findall
+                        company_info['industry'] = [i[0] or i[1] for i in industries if i[0] or i[1]]
+                    except Exception as e:
+                        logger.warning(f"Error parsing industry list: {str(e)}")
             
             # Add company info if any fields were found
             if company_info:
                 url_data['company_info'] = company_info
             
-            # Add content type and rendering options if available
-            if 'content_type' in row:
+            # Add content type if available
+            if 'content_type' in row and row['content_type']:
                 url_data['content_type'] = row['content_type']
+            
+            # Add force browser if available  
             if 'force_browser' in row:
-                url_data['force_browser'] = row['force_browser'].lower() in ('true', 'yes', '1')
+                url_data['force_browser'] = str(row['force_browser']).lower() in ('true', 'yes', '1')
             
             url_data_list.append(url_data)
+    
+    logger.info(f"Parsed {row_count} rows from CSV, found {len(url_data_list)} valid URL entries")
+    
+    if len(url_data_list) == 0 and row_count > 0:
+        logger.warning("CSV had rows but no valid URLs were found!")
+        if row_count > 0:
+            # Log the first row for debugging
+            all_rows = list(csv.DictReader(StringIO(content)))
+            if all_rows:
+                logger.warning(f"First row keys: {list(all_rows[0].keys())}")
+                if 'url' in all_rows[0]:
+                    logger.warning(f"First URL value: '{all_rows[0]['url']}'")
     
     return url_data_list
 
@@ -712,28 +765,32 @@ os.makedirs(os.path.join(os.path.dirname(__file__), 'templates'), exist_ok=True)
 os.makedirs(os.path.join(os.path.dirname(__file__), 'static'), exist_ok=True)
 
 def is_valid_url(url):
-    """
-    Check if a string is a valid URL.
-    
-    Args:
-        url: String to check
-        
-    Returns:
-        True if valid URL, False otherwise
-    """
+    """Check if a string is a valid URL."""
     import re
+    
+    # Log the URL being validated for debugging
+    logger = logging.getLogger("app")
+    logger.info(f"Validating URL: {url}")
+    
     if not url or not isinstance(url, str):
+        logger.warning("URL is empty or not a string")
         return False
         
+    # Common URL validation pattern
     pattern = re.compile(
         r'^(?:http|ftp)s?://'  # http:// or https://
-        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'  # domain...
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'  # domain
         r'localhost|'  # localhost...
         r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or IP
         r'(?::\d+)?'  # optional port
-        r'(?:/?|[/?]\S+)?$', re.IGNORECASE)  # path
+        r'(?:/?|[/?]\S+)?$', re.IGNORECASE)  # optional path
     
-    return bool(re.match(pattern, url))
+    is_valid = bool(re.match(pattern, url))
+    
+    if not is_valid:
+        logger.warning(f"URL validation failed for: {url}")
+    
+    return is_valid
 
 def get_status_description(status):
     """Get a human-readable description for a job status."""
@@ -747,6 +804,45 @@ def get_status_description(status):
     }
     return descriptions.get(status, f"Status: {status}")
 
+@app.route('/api/debug/parse-csv', methods=['POST'])
+def debug_parse_csv():
+    """Debug endpoint to test CSV parsing."""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file part'}), 400
+            
+        file = request.files['file']
+        
+        if file.filename == '':
+            return jsonify({'error': 'No selected file'}), 400
+            
+        if not file.filename.endswith('.csv'):
+            return jsonify({'error': 'File must be a CSV'}), 400
+        
+        # Parse CSV using the same function as the analyze endpoint
+        url_data_list = parse_csv_file(file)
+        
+        # Check for valid URLs
+        valid_urls = []
+        invalid_urls = []
+        
+        for data in url_data_list:
+            url = data.get('url', '')
+            if is_valid_url(url):
+                valid_urls.append(data)
+            else:
+                invalid_urls.append(url)
+        
+        return jsonify({
+            'total_rows': len(url_data_list),
+            'valid_urls': len(valid_urls),
+            'invalid_urls': len(invalid_urls),
+            'invalid_url_examples': invalid_urls[:5],
+            'first_valid_data': valid_urls[0] if valid_urls else None
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 if __name__ == '__main__':
     # Run the Flask app
@@ -755,3 +851,4 @@ if __name__ == '__main__':
     
     logger.info(f"Starting Flask app on port {port} (debug={debug})")
     app.run(host='0.0.0.0', port=port, debug=debug)
+
