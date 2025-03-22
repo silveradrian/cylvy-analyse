@@ -717,28 +717,39 @@ class URLProcessor:
     Handles URL batch processing with URL-specific company context.
     """
     
-    def __init__(self, analyzer: ContentAnalyzer, db_manager):
+    def __init__(self, analyzer: ContentAnalyzer, db_manager: DatabaseManager):
         """Initialize the URL processor."""
         self.analyzer = analyzer
-        self.db = db_manager  # Store as db, not db_manager
-        self.logger = logging.getLogger("app")
+        self.db_manager = db_manager  # Keep as db_manager, not db
+        self.logger = logging.getLogger("url_processor")
     
     async def process_urls_async(self, job_id: str, url_data_list: List[Dict[str, Any]], 
                              prompt_names: List[str], force_browser: bool = False, premium_proxy: bool = False):
         """
         Process URLs asynchronously with controlled concurrency.
+        
+        Args:
+            job_id: Job ID for this batch of URLs
+            url_data_list: List of URL data dictionaries
+            prompt_names: List of prompt names to use for analysis
+            force_browser: Whether to force browser rendering
+            premium_proxy: Whether to use premium proxy
+            
+        Returns:
+            Tuple of (processed_count, error_count)
         """
+        # Determine concurrency from environment variable
+        max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "3"))
+        
+        # Initialize counters
         total_urls = len(url_data_list)
         processed = 0
         errors = 0
         
-        # Determine concurrency from environment variable
-        max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "3"))
-        
         self.logger.info(f"Processing job {job_id} with {total_urls} URLs using concurrency {max_concurrency}")
         
         # Update job status to running
-        self.db.update_job_status(  # Now using self.db instead of self.db_manager
+        self.db_manager.update_job_status(
             job_id=job_id,
             status="running",
             total_urls=total_urls,
@@ -801,7 +812,7 @@ class URLProcessor:
                 
             try:
                 # Save result to database
-                self.db.save_result(result)  # Now using self.db instead of self.db_manager
+                self.db_manager.save_result(result)
                 
                 # Update counters
                 processed += 1
@@ -809,7 +820,7 @@ class URLProcessor:
                     errors += 1
                 
                 # Update job status for progress tracking
-                self.db.update_job_status(  # Now using self.db instead of self.db_manager
+                self.db_manager.update_job_status(
                     job_id=job_id,
                     processed_urls=processed,
                     error_count=errors
@@ -826,7 +837,7 @@ class URLProcessor:
             final_status = "completed_with_errors"
             
         # Update job completion status
-        self.db.update_job_status(  # Now using self.db instead of self.db_manager
+        self.db_manager.update_job_status(
             job_id=job_id,
             status=final_status,
             processed_urls=processed,

@@ -155,19 +155,29 @@ def process_urls_in_background(job_id: str, urls: List[str], prompt_names: List[
 
 def process_urls_in_parallel(job_id: str, urls, prompt_names: List[str],
                            force_browser: bool = False, premium_proxy: bool = False):
-    """Process URLs in parallel with controlled concurrency."""
+    """Process URLs in parallel with direct ContentAnalyzer usage."""
     try:
         logger.info(f"Starting parallel processing for job {job_id} with {len(urls)} URLs")
+        
+        # Create a new event loop for this thread
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
-        # Initialize counters and update job status
+        # Initialize counters
         total_urls = len(urls)
         processed_count = error_count = 0
-        db.update_job_status(job_id=job_id, status="running", total_urls=total_urls)
+        
+        # Update job status to running
+        db.update_job_status(
+            job_id=job_id,
+            status="running",
+            total_urls=total_urls,
+            processed_urls=0,
+            error_count=0
+        )
         
         # Create analyzer instance
-        analyzer = ContentAnalyzer()
+        analyzer_instance = ContentAnalyzer()
         max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "3"))
         
         async def process_urls():
@@ -184,39 +194,53 @@ def process_urls_in_parallel(job_id: str, urls, prompt_names: List[str],
                     
                     try:
                         # Process URL
-                        result = await analyzer.process_url_async(
-                            url=url, prompt_names=prompt_names, company_info=company_info,
-                            content_type=content_type, force_browser=url_force_browser
+                        result = await analyzer_instance.process_url_async(
+                            url=url,
+                            prompt_names=prompt_names,
+                            company_info=company_info,
+                            content_type=content_type,
+                            force_browser=url_force_browser
                         )
                         result['job_id'] = job_id
                         return result
                     except Exception as e:
                         logger.error(f"Error processing URL {url}: {str(e)}")
                         return {
-                            "url": url, "job_id": job_id, "status": "error",
-                            "error": str(e), "processed_at": time.time()
+                            "url": url,
+                            "job_id": job_id,
+                            "status": "error",
+                            "error": str(e),
+                            "processed_at": time.time()
                         }
             
             # Create tasks for all URLs
-            tasks = [
-                process_with_limit({'url': url} if isinstance(url, str) else url)
-                for url in urls
-            ]
+            tasks = []
+            for url_item in urls:
+                if isinstance(url_item, str):
+                    tasks.append(process_with_limit({'url': url_item}))
+                else:
+                    tasks.append(process_with_limit(url_item))
             
             # Process URLs in parallel with controlled concurrency
             results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            # Handle results
+            # Process results
             for result in results:
                 if isinstance(result, Exception):
+                    logger.error(f"Exception in URL processing: {str(result)}")
                     error_count += 1
                     continue
                 
                 try:
+                    # Save to database
                     db.save_result(result)
                     processed_count += 1
+                    
+                    # Update error count if needed
                     if result.get('status') != 'success':
                         error_count += 1
+                    
+                    # Update job status
                     db.update_job_status(
                         job_id=job_id,
                         processed_urls=processed_count,
@@ -226,30 +250,51 @@ def process_urls_in_parallel(job_id: str, urls, prompt_names: List[str],
                     logger.error(f"Error saving result: {str(e)}")
                     error_count += 1
             
+            # Final job status
+            final_status = "completed"
+            if processed_count == 0:
+                final_status = "failed"
+            elif error_count > 0:
+                final_status = "completed_with_errors"
+            
             # Update final job status
-            final_status = "failed" if processed_count == 0 else (
-                "completed_with_errors" if error_count > 0 else "completed"
-            )
             db.update_job_status(
-                job_id=job_id, status=final_status,
-                processed_urls=processed_count, error_count=error_count,
+                job_id=job_id,
+                status=final_status,
+                processed_urls=processed_count,
+                error_count=error_count,
                 completed_at=time.time()
             )
+            
             return processed_count, error_count
         
-        # Execute the async function
+        # Run the async function
         processed, errors = loop.run_until_complete(process_urls())
-        logger.info(f"Job {job_id} complete: {processed}/{total_urls} URLs processed, {errors} errors")
-        return True
         
+        logger.info(f"Completed processing for job {job_id}: {processed}/{total_urls} URLs processed, {errors} errors")
+        return True
+    
     except Exception as e:
-        logger.error(f"Error in processing job {job_id}: {str(e)}")
+        logger.error(f"Error in parallel processing for job {job_id}: {str(e)}")
+        import traceback
         logger.error(traceback.format_exc())
-        db.update_job_status(job_id=job_id, status="failed", error_count=1)
+        
+        try:
+            db.update_job_status(
+                job_id=job_id,
+                status="failed",
+                error_count=1
+            )
+        except Exception as db_error:
+            logger.error(f"Failed to update job status: {str(db_error)}")
+            
         return False
     
     finally:
-        loop.close()
+        # Clean up
+        if 'loop' in locals() and loop is not None:
+            loop.close()
+        
         if threading.current_thread().ident in active_threads:
             active_threads.remove(threading.current_thread().ident)
 

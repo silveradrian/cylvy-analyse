@@ -50,7 +50,6 @@ class DatabaseManager:
             
         self.db_path = db_path
         self._init_db()
-        self.db = self  # Add self-reference to fix '.db' attribute access errors
         logger.info(f"Database initialized at {db_path}")
     
     def get_connection(self):
@@ -367,31 +366,41 @@ class DatabaseManager:
         Returns:
             List of result dictionaries
         """
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "SELECT * FROM results WHERE job_id = ? ORDER BY processed_at DESC LIMIT ? OFFSET ?", 
-            (job_id, int(limit), int(offset))
-        )
-        
-        rows = cursor.fetchall()
-        
-        # Convert rows to dicts and parse JSON fields
-        results = []
-        for row in rows:
-            result = dict(row)
-            # Parse data JSON if present
-            if 'data' in result and result['data']:
-                try:
-                    result['data'] = json.loads(result['data'])
-                except json.JSONDecodeError:
-                    pass
-            results.append(result)
-        
-        conn.close()
-        return results
+        try:
+            conn = self.get_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                "SELECT * FROM results WHERE job_id = ? ORDER BY processed_at DESC LIMIT ? OFFSET ?", 
+                (job_id, int(limit), int(offset))
+            )
+            
+            rows = cursor.fetchall()
+            
+            # Convert rows to dicts and parse JSON fields
+            results = []
+            for row in rows:
+                result = dict(row)
+                # Parse data JSON if present
+                if 'data' in result and result['data']:
+                    try:
+                        result['data'] = json.loads(result['data'])
+                    except json.JSONDecodeError:
+                        pass
+            
+                # Ensure analysis_results exists for template rendering
+                if 'analysis_results' not in result:
+                    result['analysis_results'] = {}
+                    
+                results.append(result)
+            
+            conn.close()
+            return results
+        except Exception as e:
+            logger.error(f"Error in get_results: {str(e)}")
+            return []
+    
 
 
     def get_results_for_job(self, job_id: str) -> List[Dict[str, Any]]:
