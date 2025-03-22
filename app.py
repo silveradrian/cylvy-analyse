@@ -530,22 +530,23 @@ def delete_job(job_id):
 @app.route('/job/<job_id>/export')
 def export_job(job_id):
     """Export job results."""
-    # Get job details
-    job = db.get_job(job_id)
-    
-    if not job:
-        return render_template('error.html', error="Job not found"), 404
-    
-    # Get export format
-    export_format = request.args.get('format', 'csv')
-    
     try:
+        # Get job details
+        job = db.get_job(job_id)
+        
+        if not job:
+            flash("Job not found", "error")
+            return redirect(url_for('index'))
+        
+        # Get export format
+        export_format = request.args.get('format', 'csv')
+        
         if export_format == 'csv':
             # Export to CSV
             csv_path = db.export_results_to_csv(job_id)
             
             if not csv_path:
-                flash("No results to export or export failed", "error")
+                flash("Error generating CSV export", "danger")
                 return redirect(url_for('job_status', job_id=job_id))
             
             logger.info(f"Sending CSV file from {csv_path}")
@@ -560,7 +561,7 @@ def export_job(job_id):
             excel_path = db.export_results_to_excel(job_id)
             
             if not excel_path:
-                flash("No results to export or export failed", "error")
+                flash("Error generating Excel export", "danger")
                 return redirect(url_for('job_status', job_id=job_id))
             
             logger.info(f"Sending Excel file from {excel_path}")
@@ -571,12 +572,13 @@ def export_job(job_id):
                 download_name=f"results_{job_id}.xlsx"
             )
         else:
-            flash("Invalid export format", "error")
+            flash("Invalid export format", "warning")
             return redirect(url_for('job_status', job_id=job_id))
     except Exception as e:
-        logger.error(f"Export error for job {job_id}: {str(e)}")
-        flash(f"Export failed: {str(e)}", "error")
+        logger.error(f"Export error: {str(e)}")
+        flash(f"Export failed: {str(e)}", "danger")
         return redirect(url_for('job_status', job_id=job_id))
+    
     
 @app.route('/prompts')
 def list_prompts():
