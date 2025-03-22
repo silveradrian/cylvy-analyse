@@ -789,110 +789,134 @@ class DatabaseManager:
         
         return []
 
-    def export_results_to_csv(self, job_id):
-        """Export job results to CSV with proper handling of structured fields"""
+    def export_results_to_csv(self, job_id: str) -> str:
+        """Export job results to CSV file."""
         try:
-            # Get results for the job
+            # Get all results for the job
             results = self.get_results_for_job(job_id)
             
             if not results:
-                return None
-                
-            # Create a temporary file
-            import tempfile
-            temp_dir = tempfile.gettempdir()
-            csv_path = os.path.join(temp_dir, f"results_{job_id}.csv")
+                logger.warning(f"No results to export for job {job_id}")
+                return ""
             
-            # Get all unique structured field names from results
-            all_structured_fields = set()
+            # Create a temporary file
+            fd, csv_path = tempfile.mkstemp(suffix='.csv')
+            os.close(fd)
+            
+            # Prepare data for CSV
+            export_data = []
             
             for result in results:
-                # Parse the data field which may contain structured data
-                data_json = result.get('data', '{}')
+                # Start with basic result fields
+                row = {
+                    'url': result.get('url', ''),
+                    'status': result.get('status', ''),
+                    'title': result.get('title', ''),
+                    'word_count': result.get('word_count', 0),
+                    'processed_at': result.get('processed_at', '')
+                }
+                
+                # Add any other direct fields from the result
+                for key, value in result.items():
+                    if key not in ['data', 'job_id', 'id'] and key not in row:
+                        row[key] = value
+                
+                # Extract structured data from the data JSON
                 try:
-                    data = json.loads(data_json)
+                    data = result.get('data', '{}')
+                    if isinstance(data, str):
+                        data = json.loads(data)
                     
-                    # Check both possible locations for structured data
-                    # 1. In the structured_data field
+                    # Extract all structured data fields from all prompts
                     if isinstance(data, dict) and 'structured_data' in data:
                         for prompt_name, fields in data['structured_data'].items():
                             if isinstance(fields, dict):
-                                all_structured_fields.update(fields.keys())
-                    
-                    # 2. Directly in the parsed_fields section of analysis_results
-                    if isinstance(data, dict) and 'analysis_results' in data:
-                        for prompt_name, analysis in data['analysis_results'].items():
-                            if isinstance(analysis, dict) and 'parsed_fields' in analysis:
-                                all_structured_fields.update(analysis['parsed_fields'].keys())
-                except (json.JSONDecodeError, TypeError, AttributeError):
-                    pass
-            
-            # Define columns: base columns + structured fields, alphabetically sorted
-            base_columns = [
-                'url', 'title', 'status', 'content_type', 'word_count',
-                'processed_at', 'prompt_name', 'api_tokens'
-            ]
-            
-            # Special handling for IQGio fields - sort them in logical groups
-            iqgio_fields = [f for f in all_structured_fields if f.startswith(('ci_', 'pa_'))]
-            content_intelligence_fields = sorted([f for f in iqgio_fields if f.startswith('ci_')])
-            persona_analysis_fields = sorted([f for f in iqgio_fields if f.startswith('pa_')])
-            
-            # Other fields not in special categories
-            other_fields = sorted([f for f in all_structured_fields if f not in iqgio_fields])
-            
-            # Combine all columns
-            all_columns = base_columns + content_intelligence_fields + persona_analysis_fields + other_fields
-            
-            # Write results to CSV
-            with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=all_columns)
-                writer.writeheader()
+                                prefix = f"{prompt_name}_" if len(data['structured_data']) > 1 else ""
+                                for field_name, field_value in fields.items():
+                                    row[f"{prefix}{field_name}"] = field_value
+                except Exception as e:
+                    logger.error(f"Error extracting structured data: {str(e)}")
                 
-                for result in results:
-                    # Start with basic fields
-                    row = {col: result.get(col, '') for col in base_columns}
-                    
-                    # Parse the data JSON to extract structured fields
-                    data_json = result.get('data', '{}')
-                    try:
-                        data = json.loads(data_json)
-                        
-                        # Extract structured data from different possible locations
-                        structured_data = {}
-                        
-                        # From structured_data
-                        if isinstance(data, dict) and 'structured_data' in data:
-                            for prompt_name, fields in data['structured_data'].items():
-                                if isinstance(fields, dict):
-                                    structured_data.update(fields)
-                        
-                        # From parsed_fields within analysis_results
-                        if isinstance(data, dict) and 'analysis_results' in data:
-                            for prompt_name, analysis in data['analysis_results'].items():
-                                if isinstance(analysis, dict) and 'parsed_fields' in analysis:
-                                    structured_data.update(analysis['parsed_fields'])
-                        
-                        # Add structured fields to the row
-                        for field_name in all_structured_fields:
-                            if field_name in structured_data:
-                                value = structured_data[field_name]
-                                # Format list values properly for CSV
-                                if isinstance(value, list):
-                                    row[field_name] = ', '.join(str(item) for item in value)
-                                else:
-                                    row[field_name] = value
-                                    
-                    except (json.JSONDecodeError, TypeError, AttributeError) as e:
-                        logger.warning(f"Error parsing data for export: {e}")
-                    
-                    # Write the row
-                    writer.writerow(row)
-                    
+                export_data.append(row)
+            
+            # Log what fields we found for debugging
+            if export_data:
+                logger.info(f"Export fields: {list(export_data[0].keys())}")
+            
+            # Create a DataFrame and export to CSV
+            df = pd.DataFrame(export_data)
+            df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+            
+            logger.info(f"Exported {len(export_data)} results to CSV: {csv_path}")
             return csv_path
         except Exception as e:
             logger.error(f"Error exporting results to CSV: {str(e)}")
-            return None
+            return ""
+
+    def export_results_to_excel(self, job_id: str) -> str:
+        """Export job results to Excel file."""
+        try:
+            # Get all results for the job
+            results = self.get_results_for_job(job_id)
+            
+            if not results:
+                logger.warning(f"No results to export for job {job_id}")
+                return ""
+            
+            # Create a temporary file
+            fd, excel_path = tempfile.mkstemp(suffix='.xlsx')
+            os.close(fd)
+            
+            # Prepare data for Excel - extract structured data
+            export_data = []
+            
+            for result in results:
+                # Start with basic result fields
+                row = {
+                    'url': result.get('url', ''),
+                    'status': result.get('status', ''),
+                    'title': result.get('title', ''),
+                    'word_count': result.get('word_count', 0),
+                    'processed_at': result.get('processed_at', '')
+                }
+                
+                # Extract analysis data
+                data_json = result.get('data', '{}')
+                if data_json:
+                    try:
+                        if isinstance(data_json, str):
+                            data = json.loads(data_json)
+                        else:
+                            data = data_json
+                        
+                        # Extract structured fields if available
+                        if 'structured_data' in data and isinstance(data['structured_data'], dict):
+                            # Get the first prompt's structured data
+                            for prompt_name, fields in data['structured_data'].items():
+                                if isinstance(fields, dict):
+                                    # Add all fields from the structured data
+                                    for field_name, field_value in fields.items():
+                                        row[field_name] = field_value
+                                break  # Only use the first prompt's data
+                    except Exception as e:
+                        logger.error(f"Error parsing result data JSON: {str(e)}")
+                
+                # Also include any fields directly stored on the result (analyzer.py already adds them here)
+                for key, value in result.items():
+                    if key not in row and key not in ['data', 'job_id', 'id']:
+                        row[key] = value
+                        
+                export_data.append(row)
+            
+            # Create a DataFrame and export to Excel
+            df = pd.DataFrame(export_data)
+            df.to_excel(excel_path, index=False, engine='openpyxl')
+            
+            logger.info(f"Exported {len(export_data)} results to Excel: {excel_path}")
+            return excel_path
+        except Exception as e:
+            logger.error(f"Error exporting results to Excel: {str(e)}")
+            return ""
 
     def export_results_to_excel(self, job_id):
         """

@@ -539,35 +539,45 @@ def export_job(job_id):
     # Get export format
     export_format = request.args.get('format', 'csv')
     
-    if export_format == 'csv':
-        # Export to CSV
-        csv_path = db.export_results_to_csv(job_id)
-        
-        if not csv_path:
-            return render_template('error.html', error="Export failed"), 500
-        
-        return send_file(
-            csv_path,
-            mimetype='text/csv',
-            as_attachment=True,
-            download_name=f"results_{job_id}.csv"
-        )
-    elif export_format == 'excel':
-        # Export to Excel
-        excel_path = db.export_results_to_excel(job_id)
-        
-        if not excel_path:
-            return render_template('error.html', error="Export failed"), 500
-        
-        return send_file(
-            excel_path,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            as_attachment=True,
-            download_name=f"results_{job_id}.xlsx"
-        )
-    else:
-        return render_template('error.html', error="Invalid export format"), 400
-
+    try:
+        if export_format == 'csv':
+            # Export to CSV
+            csv_path = db.export_results_to_csv(job_id)
+            
+            if not csv_path:
+                flash("No results to export or export failed", "error")
+                return redirect(url_for('job_status', job_id=job_id))
+            
+            logger.info(f"Sending CSV file from {csv_path}")
+            return send_file(
+                csv_path,
+                mimetype='text/csv',
+                as_attachment=True,
+                download_name=f"results_{job_id}.csv"
+            )
+        elif export_format == 'excel':
+            # Export to Excel
+            excel_path = db.export_results_to_excel(job_id)
+            
+            if not excel_path:
+                flash("No results to export or export failed", "error")
+                return redirect(url_for('job_status', job_id=job_id))
+            
+            logger.info(f"Sending Excel file from {excel_path}")
+            return send_file(
+                excel_path,
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                as_attachment=True,
+                download_name=f"results_{job_id}.xlsx"
+            )
+        else:
+            flash("Invalid export format", "error")
+            return redirect(url_for('job_status', job_id=job_id))
+    except Exception as e:
+        logger.error(f"Export error for job {job_id}: {str(e)}")
+        flash(f"Export failed: {str(e)}", "error")
+        return redirect(url_for('job_status', job_id=job_id))
+    
 @app.route('/prompts')
 def list_prompts():
     """List all available prompts."""
