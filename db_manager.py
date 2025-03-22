@@ -768,6 +768,289 @@ class DatabaseManager:
             logger.error(f"Error inspecting schema: {e}")
             return {}
 
+
+
+
+
+
+def extract_output_fields_from_prompt(self, prompt_name):
+    """
+    Extract output field definitions from a prompt configuration.
+    
+    Args:
+        prompt_name: Name of the prompt
+        
+    Returns:
+        List of output field dictionaries
+    """
+    from prompt_loader import get_prompt_by_name
+    
+    try:
+        prompt = get_prompt_by_name(prompt_name)
+        if prompt and 'output_fields' in prompt:
+            return prompt['output_fields']
+    except Exception as e:
+        logger.error(f"Error extracting output fields from prompt {prompt_name}: {e}")
+    
+    return []
+
+def export_results_to_csv(self, job_id):
+    """Export job results to CSV with proper handling of structured fields"""
+    try:
+        # Get results for the job
+        results = self.get_results_for_job(job_id)
+        
+        if not results:
+            return None
+            
+        # Create a temporary file
+        import tempfile
+        temp_dir = tempfile.gettempdir()
+        csv_path = os.path.join(temp_dir, f"results_{job_id}.csv")
+        
+        # Get all unique structured field names from results
+        all_structured_fields = set()
+        
+        for result in results:
+            # Parse the data field which may contain structured data
+            data_json = result.get('data', '{}')
+            try:
+                data = json.loads(data_json)
+                
+                # Check both possible locations for structured data
+                # 1. In the structured_data field
+                if isinstance(data, dict) and 'structured_data' in data:
+                    for prompt_name, fields in data['structured_data'].items():
+                        if isinstance(fields, dict):
+                            all_structured_fields.update(fields.keys())
+                
+                # 2. Directly in the parsed_fields section of analysis_results
+                if isinstance(data, dict) and 'analysis_results' in data:
+                    for prompt_name, analysis in data['analysis_results'].items():
+                        if isinstance(analysis, dict) and 'parsed_fields' in analysis:
+                            all_structured_fields.update(analysis['parsed_fields'].keys())
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+        
+        # Define columns: base columns + structured fields, alphabetically sorted
+        base_columns = [
+            'url', 'title', 'status', 'content_type', 'word_count',
+            'processed_at', 'prompt_name', 'api_tokens'
+        ]
+        
+        # Special handling for IQGio fields - sort them in logical groups
+        iqgio_fields = [f for f in all_structured_fields if f.startswith(('ci_', 'pa_'))]
+        content_intelligence_fields = sorted([f for f in iqgio_fields if f.startswith('ci_')])
+        persona_analysis_fields = sorted([f for f in iqgio_fields if f.startswith('pa_')])
+        
+        # Other fields not in special categories
+        other_fields = sorted([f for f in all_structured_fields if f not in iqgio_fields])
+        
+        # Combine all columns
+        all_columns = base_columns + content_intelligence_fields + persona_analysis_fields + other_fields
+        
+        # Write results to CSV
+        with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=all_columns)
+            writer.writeheader()
+            
+            for result in results:
+                # Start with basic fields
+                row = {col: result.get(col, '') for col in base_columns}
+                
+                # Parse the data JSON to extract structured fields
+                data_json = result.get('data', '{}')
+                try:
+                    data = json.loads(data_json)
+                    
+                    # Extract structured data from different possible locations
+                    structured_data = {}
+                    
+                    # From structured_data
+                    if isinstance(data, dict) and 'structured_data' in data:
+                        for prompt_name, fields in data['structured_data'].items():
+                            if isinstance(fields, dict):
+                                structured_data.update(fields)
+                    
+                    # From parsed_fields within analysis_results
+                    if isinstance(data, dict) and 'analysis_results' in data:
+                        for prompt_name, analysis in data['analysis_results'].items():
+                            if isinstance(analysis, dict) and 'parsed_fields' in analysis:
+                                structured_data.update(analysis['parsed_fields'])
+                    
+                    # Add structured fields to the row
+                    for field_name in all_structured_fields:
+                        if field_name in structured_data:
+                            value = structured_data[field_name]
+                            # Format list values properly for CSV
+                            if isinstance(value, list):
+                                row[field_name] = ', '.join(str(item) for item in value)
+                            else:
+                                row[field_name] = value
+                                
+                except (json.JSONDecodeError, TypeError, AttributeError) as e:
+                    logger.warning(f"Error parsing data for export: {e}")
+                
+                # Write the row
+                writer.writerow(row)
+                
+        return csv_path
+    except Exception as e:
+        logger.error(f"Error exporting results to CSV: {str(e)}")
+        return None
+
+def export_results_to_excel(self, job_id):
+    """
+    Export job results to an Excel file with all prompt output fields.
+    
+    Args:
+        job_id: Job identifier
+        
+    Returns:
+        Path to created Excel file or None if export failed
+    """
+    try:
+        import tempfile
+        import pandas as pd
+        from prompt_loader import PromptLoader
+        
+        # Get job details
+        job = self.get_job(job_id)
+        if not job:
+            logger.error(f"Job {job_id} not found for Excel export")
+            return None
+            
+        # Get prompt names used in this job
+        prompt_names = job.get('prompts', [])
+        
+        # Get prompt definitions to extract all expected output fields
+        prompt_loader = PromptLoader()
+        all_output_fields = []
+        
+        for prompt_name in prompt_names:
+            prompt_config = prompt_loader.get_prompt_by_name(prompt_name)
+            if prompt_config and 'output_fields' in prompt_config:
+                all_output_fields.extend(prompt_config.get('output_fields', []))
+        
+        # Get results
+        results = self.get_results_for_job(job_id)
+        if not results:
+            logger.warning(f"No results found for job {job_id}")
+            # Create empty Excel with header
+            temp_dir = tempfile.gettempdir()
+            excel_path = os.path.join(temp_dir, f"results_{job_id}.xlsx")
+            
+            # Create header columns including expected output fields
+            columns = ['URL', 'Title', 'Status', 'Error', 'Word Count', 'API Tokens']
+            columns.extend([field.get('name') for field in all_output_fields])
+            
+            # Create empty DataFrame with headers
+            df = pd.DataFrame(columns=columns)
+            df.to_excel(excel_path, index=False)
+            logger.info(f"Created empty Excel export for job {job_id}")
+            return excel_path
+        
+        # Create a temp file
+        temp_dir = tempfile.gettempdir()
+        excel_path = os.path.join(temp_dir, f"results_{job_id}.xlsx")
+        
+        # Process results into rows
+        data = []
+        
+        for result in results:
+            # Create base row with standard fields
+            row_data = {
+                'URL': result.get('url', ''),
+                'Title': result.get('title', ''),
+                'Status': result.get('status', ''),
+                'Word Count': result.get('word_count', 0),
+                'API Tokens': result.get('api_tokens', 0),
+                'Error': result.get('error', '')
+            }
+            
+            # Get analysis results from data field
+            analysis_results = {}
+            
+            # Extract from either analysis_results or data field
+            if 'analysis_results' in result and result['analysis_results']:
+                analysis_data = result['analysis_results']
+                if isinstance(analysis_data, str):
+                    try:
+                        analysis_results = json.loads(analysis_data)
+                    except Exception:
+                        analysis_results = {}
+                else:
+                    analysis_results = analysis_data
+            elif 'data' in result and result['data']:
+                data_field = result['data']
+                if isinstance(data_field, str):
+                    try:
+                        analysis_results = json.loads(data_field)
+                    except Exception:
+                        analysis_results = {}
+                else:
+                    analysis_results = data_field
+            
+            # Flatten all output fields from all prompts
+            for prompt_name, values in analysis_results.items():
+                if isinstance(values, dict):
+                    for key, value in values.items():
+                        row_data[key] = value
+                else:
+                    # Handle non-dict values by using prompt name as key
+                    row_data[prompt_name] = values
+            
+            # Add empty columns for expected output fields that weren't found
+            for field in all_output_fields:
+                field_name = field.get('name')
+                if field_name not in row_data:
+                    if field.get('field_type') == 'int' or field.get('field_type') == 'integer':
+                        row_data[field_name] = 0
+                    else:
+                        row_data[field_name] = ''
+            
+            data.append(row_data)
+        
+        # Create DataFrame
+        df = pd.DataFrame(data)
+        
+        # Export to Excel with formatting
+        try:
+            with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='Results', index=False)
+                
+                # Auto-adjust column widths
+                try:
+                    from openpyxl.utils import get_column_letter
+                    worksheet = writer.sheets['Results']
+                    
+                    for idx, col in enumerate(df.columns):
+                        # Get max length of column data and header
+                        max_len = max(
+                            df[col].astype(str).apply(len).max(),
+                            len(str(col))
+                        ) + 2  # add a little extra space
+                        
+                        # Limit column width
+                        max_len = min(max_len, 50)
+                        
+                        # Set width
+                        worksheet.column_dimensions[get_column_letter(idx+1)].width = max_len
+                
+                except ImportError:
+                    logger.warning("openpyxl not fully available for Excel formatting")
+        
+        except Exception as e:
+            logger.warning(f"Error with Excel advanced formatting: {e}, using basic export")
+            df.to_excel(excel_path, index=False)
+        
+        logger.info(f"Exported {len(data)} results for job {job_id} to Excel: {excel_path}")
+        return excel_path
+        
+    except Exception as e:
+        logger.error(f"Error exporting to Excel: {str(e)}")
+        return None
+
 # Create a global instance for easy import and use throughout the application
 db = DatabaseManager()
 
