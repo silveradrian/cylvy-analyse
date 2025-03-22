@@ -48,25 +48,19 @@ def parse_structured_response(analysis_text, prompt_config):
         Dictionary with parsed field values
     """
     parsed_fields = {}
-    # Get delimiter from config, default to ||| which is commonly used
     delimiter = prompt_config.get('delimiter', '|||')
     output_fields = prompt_config.get('output_fields', [])
     
-    # Debug log the raw response
-    logger.debug(f"Raw response to parse: {analysis_text[:200]}...")
-    logger.debug(f"Using delimiter: '{delimiter}'")
-    logger.debug(f"Expected fields: {[f.get('name') for f in output_fields if 'name' in f]}")
+    # Log the first few lines of the response for debugging
+    preview_lines = analysis_text.strip().split('\n')[:10]
+    logger.warning(f"No fields parsed from response. First few lines:\n{preview_lines[0]}")
     
     # Create a mapping of field names to their types
     field_types = {field.get('name'): field.get('field_type', 'text') 
                   for field in output_fields if 'name' in field}
     
-    # Split the response into lines and remove any markdown formatting
+    # Split the response into lines
     lines = analysis_text.strip().split('\n')
-    
-    # Count delimiter occurrences for debugging
-    delimiter_count = sum(1 for line in lines if delimiter in line)
-    logger.debug(f"Found {delimiter_count} lines containing the delimiter")
     
     for line in lines:
         if delimiter in line:
@@ -76,9 +70,6 @@ def parse_structured_response(analysis_text, prompt_config):
                 field_name = parts[0].strip()
                 field_value = parts[1].strip()
                 
-                # Log each field being parsed
-                logger.debug(f"Parsing field: '{field_name}' with value: '{field_value}'")
-                
                 # Get field type from configuration
                 field_type = field_types.get(field_name, 'text')
                 
@@ -87,6 +78,7 @@ def parse_structured_response(analysis_text, prompt_config):
                     try:
                         # Handle values like [1-10 or 0] by extracting the first number
                         if '[' in field_value and ']' in field_value:
+                            import re
                             numbers = re.findall(r'\d+', field_value)
                             if numbers:
                                 parsed_fields[field_name] = int(numbers[0])
@@ -113,9 +105,7 @@ def parse_structured_response(analysis_text, prompt_config):
                         # Try to parse as JSON list
                         try:
                             import json
-                            # Replace single quotes with double quotes for JSON compatibility
-                            json_value = field_value.replace("'", "\"")
-                            parsed_fields[field_name] = json.loads(json_value)
+                            parsed_fields[field_name] = json.loads(field_value.replace("'", "\""))
                         except json.JSONDecodeError:
                             # Fall back to simple string splitting
                             items = field_value[1:-1].split(',')
@@ -128,10 +118,6 @@ def parse_structured_response(analysis_text, prompt_config):
                     parsed_fields[field_name] = field_value
     
     logger.info(f"Parsed {len(parsed_fields)} fields from response")
-    if len(parsed_fields) == 0:
-        # Log first few lines of response for debugging
-        sample = "\n".join(lines[:10]) if len(lines) > 10 else "\n".join(lines)
-        logger.warning(f"No fields parsed from response. First few lines:\n{sample}")
     return parsed_fields
 
 class AdvancedRateLimiter:
@@ -405,8 +391,9 @@ class ContentAnalyzer:
         
         return processed_results
     
+
     async def analyze_with_prompt_async(self, content: str, prompt_config: Dict[str, Any], 
-                              company_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                          company_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Asynchronously analyze content using OpenAI model with a specific prompt configuration.
         """
@@ -432,10 +419,6 @@ class ContentAnalyzer:
             user_message_template = prompt_config.get('user_message', '')
             temperature = prompt_config.get('temperature', 0.3)
             max_tokens = prompt_config.get('max_tokens', 1500)
-            delimiter = prompt_config.get('delimiter', '|||')
-            
-            # Log key prompt configuration
-            logger.debug(f"Using prompt '{prompt_config.get('name', 'unnamed')}' with delimiter: '{delimiter}'")
             
             # Prepare the company context
             company_context = ""
@@ -445,57 +428,73 @@ class ContentAnalyzer:
                     company_context += f"- {key.capitalize()}: {value}\n"
             
             # Format user message with the content and company context
-            user_message = user_message_template.format(
-                content=content[:50000],  # Limit content length
-                company_context=company_context
-            )
+            # Fix: Use explicit named parameters and ensure content is properly included
+            try:
+                if "{content}" in user_message_template:
+                    user_message = user_message_template.format(
+                        content=content[:50000],  # Limit content length
+                        company_context=company_context
+                    )
+                else:
+                    # If there's no {content} placeholder, append content
+                    user_message = user_message_template + "\n\nContent to analyze:\n" + content[:50000]
+            except Exception as format_error:
+                logger.error(f"Error formatting user message: {str(format_error)}")
+                # Fallback to simple concatenation
+                user_message = f"{user_message_template}\n\nContent to analyze:\n{content[:50000]}"
             
             # Log the request details
             logger.info(f"Calling OpenAI API with model {model} - content length: {len(content)} chars")
             
-            # Call the OpenAI API asynchronously
-            response = await async_client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": user_message}
-                ],
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
-            
-            # Calculate token usage
-            prompt_tokens = response.usage.prompt_tokens
-            completion_tokens = response.usage.completion_tokens
-            total_tokens = response.usage.total_tokens
-            
-            # Extract the response
-            analysis_text = response.choices[0].message.content
-            
-            # Log the first part of the raw response for debugging
-            logger.debug(f"Raw response (first 100 chars): {analysis_text[:100]}...")
-            
-            # Parse the structured fields from the analysis text
-            parsed_fields = parse_structured_response(analysis_text, prompt_config)
-            
-            # Calculate processing time
-            processing_time = time.time() - start_time
-            
-            logger.info(f"OpenAI API call completed in {processing_time:.2f}s")
-            logger.info(f"Token usage: {total_tokens} tokens")
-            logger.info(f"Parsed {len(parsed_fields)} structured fields from the response")
-            
-            # Return both the raw analysis and the parsed fields
-            return {
-                "analysis": analysis_text,
-                "parsed_fields": parsed_fields,
-                "model": model,
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
-                "processing_time": processing_time
-            }
+            # Skip rate limiter and make direct API call
+            try:
+                # Call the OpenAI API asynchronously
+                response = await async_client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": user_message}
+                    ],
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
                 
+                # Calculate token usage
+                prompt_tokens = response.usage.prompt_tokens
+                completion_tokens = response.usage.completion_tokens
+                total_tokens = response.usage.total_tokens
+                
+                # Extract the response
+                analysis_text = response.choices[0].message.content
+                
+                # Parse the structured fields from the analysis text using our dedicated function
+                parsed_fields = parse_structured_response(analysis_text, prompt_config)
+                logger.info(f"Parsed {len(parsed_fields)} structured fields from the response")
+                
+                # Calculate processing time
+                processing_time = time.time() - start_time
+                
+                logger.info(f"OpenAI API call completed in {processing_time:.2f}s")
+                logger.info(f"Token usage: {total_tokens} tokens")
+                
+                # Return both the raw analysis and the parsed fields
+                return {
+                    "analysis": analysis_text,
+                    "parsed_fields": parsed_fields,  # Add the structured fields
+                    "model": model,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "processing_time": processing_time
+                }
+                
+            except Exception as api_error:
+                logger.error(f"Error calling OpenAI API: {str(api_error)}")
+                return {
+                    "error": f"API error: {str(api_error)}",
+                    "analysis": "Error: Could not complete analysis due to API error."
+                }
+            
         except Exception as e:
             logger.error(f"Error in async OpenAI API call: {str(e)}")
             return {

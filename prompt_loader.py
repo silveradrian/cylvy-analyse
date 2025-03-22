@@ -20,14 +20,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger("prompt_loader")
 
-# Default directories
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Fix the directory paths - use current directory as base instead of parent of parent
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = SCRIPT_DIR  # Changed to use the script directory as the base
 PROMPTS_DIR = os.path.join(BASE_DIR, "prompts", "yaml")
 
 def ensure_directories():
     """Ensure that necessary directories exist."""
     os.makedirs(PROMPTS_DIR, exist_ok=True)
     logger.info(f"Ensured prompt directory exists: {PROMPTS_DIR}")
+    # List files in the directory to verify
+    try:
+        files = os.listdir(PROMPTS_DIR)
+        logger.info(f"Files in prompt directory: {files}")
+    except Exception as e:
+        logger.error(f"Error listing files in {PROMPTS_DIR}: {str(e)}")
 
 def validate_prompt_config(config: Dict[str, Any]) -> bool:
     """
@@ -57,7 +64,12 @@ def load_yaml_file(file_path: str) -> Dict[str, Any]:
     Returns:
         Dictionary with YAML content or empty dict on error
     """
+    logger.info(f"Attempting to load YAML file: {file_path}")
     try:
+        if not os.path.exists(file_path):
+            logger.error(f"YAML file does not exist: {file_path}")
+            return {}
+            
         with open(file_path, 'r', encoding='utf-8') as f:
             content = yaml.safe_load(f)
             logger.info(f"Successfully loaded YAML file: {file_path}")
@@ -79,25 +91,77 @@ def load_prompt_configs(prompt_dir: Optional[str] = None) -> List[Dict[str, Any]
     if prompt_dir is None:
         prompt_dir = PROMPTS_DIR
     
-    # Only ensure directory exists, don't create default prompts
+    # Ensure directory exists and log its contents
     ensure_directories()
     
     configs = []
     
     try:
-        # Get all YAML files in the directory and subdirectories
+        # Log the full paths we're searching
         yaml_pattern = os.path.join(prompt_dir, "**/*.yaml")
         yml_pattern = os.path.join(prompt_dir, "**/*.yml")
+        logger.info(f"Searching for YAML files with patterns: {yaml_pattern} and {yml_pattern}")
+        
+        # Also try direct file resolution for the known file
+        specific_file = os.path.join(prompt_dir, "iqgio_mega_prompt.yaml")
+        logger.info(f"Checking for specific file: {specific_file}")
+        if os.path.exists(specific_file):
+            logger.info(f"Found specific file: {specific_file}")
+        else:
+            logger.warning(f"Specific file not found: {specific_file}")
+        
+        # Get all YAML files in the directory and subdirectories
         yaml_files = glob.glob(yaml_pattern, recursive=True) + glob.glob(yml_pattern, recursive=True)
         
         if not yaml_files:
             logger.warning(f"No YAML files found in {prompt_dir}")
-            return configs
+            # Try alternative locations
+            alt_dirs = [
+                os.path.join(BASE_DIR, "prompts"),  # Try without "yaml" subfolder
+                os.path.join(os.path.dirname(BASE_DIR), "prompts", "yaml")  # Try one level up
+            ]
+            
+            for alt_dir in alt_dirs:
+                logger.info(f"Trying alternative directory: {alt_dir}")
+                if os.path.exists(alt_dir):
+                    yaml_alt_pattern = os.path.join(alt_dir, "**/*.yaml")
+                    yml_alt_pattern = os.path.join(alt_dir, "**/*.yml")
+                    alt_files = glob.glob(yaml_alt_pattern, recursive=True) + glob.glob(yml_alt_pattern, recursive=True)
+                    
+                    if alt_files:
+                        logger.info(f"Found {len(alt_files)} YAML files in alternative directory: {alt_dir}")
+                        yaml_files = alt_files
+                        break
+            
+            # If still no files found, create a default prompt for testing
+            if not yaml_files:
+                logger.warning("No YAML files found in any directory, creating a default prompt")
+                default_file = os.path.join(prompt_dir, "iqgio_mega_prompt.yaml")
+                with open(default_file, 'w', encoding='utf-8') as f:
+                    yaml.dump({
+                        'name': 'iqgio_mega_prompt',
+                        'description': 'Default prompt created by prompt_loader',
+                        'model': 'gpt-4',
+                        'system_instructions': 'You are a helpful assistant.',
+                        'analysis_prompt': 'Analyze the following content:\n{content}\n{company_context}',
+                        'temperature': 0.3,
+                        'max_tokens': 1500,
+                        'delimiter': '|||',
+                        'output_fields': [
+                            {'name': 'summary', 'description': 'Brief summary', 'field_type': 'text'},
+                            {'name': 'key_points', 'description': 'Key points', 'field_type': 'list'}
+                        ]
+                    }, f)
+                logger.info(f"Created default prompt file: {default_file}")
+                yaml_files = [default_file]
         
         logger.info(f"Found {len(yaml_files)} YAML files: {[os.path.basename(f) for f in yaml_files]}")
         
         for yaml_file in yaml_files:
             try:
+                # Log full path of file being processed
+                logger.info(f"Processing YAML file: {yaml_file}")
+                
                 # Load the YAML file
                 config = load_yaml_file(yaml_file)
                 
@@ -187,6 +251,7 @@ class PromptLoader:
         """
         self.prompts_dir = prompts_dir if prompts_dir else PROMPTS_DIR
         self.ensure_prompt_dir()
+        logger.info(f"PromptLoader initialized with directory: {self.prompts_dir}")
         
     def ensure_prompt_dir(self):
         """Ensure the prompts directory exists."""
