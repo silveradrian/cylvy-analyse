@@ -720,7 +720,7 @@ class URLProcessor:
     def __init__(self, analyzer: ContentAnalyzer, db_manager: DatabaseManager):
         """Initialize the URL processor."""
         self.analyzer = analyzer
-        self.db_manager = db_manager  # Keep as db_manager, not db
+        self.db_manager = db_manager  # Store as db_manager, not db
         self.logger = logging.getLogger("url_processor")
     
     async def process_urls_async(self, job_id: str, url_data_list: List[Dict[str, Any]], 
@@ -738,13 +738,13 @@ class URLProcessor:
         Returns:
             Tuple of (processed_count, error_count)
         """
-        # Determine concurrency from environment variable
-        max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "3"))
-        
         # Initialize counters
         total_urls = len(url_data_list)
         processed = 0
         errors = 0
+        
+        # Determine concurrency from environment variable
+        max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "3"))
         
         self.logger.info(f"Processing job {job_id} with {total_urls} URLs using concurrency {max_concurrency}")
         
@@ -812,7 +812,7 @@ class URLProcessor:
                 
             try:
                 # Save result to database
-                self.db_manager.save_result(result)
+                self.db_manager.save_result(result)  # Use db_manager not db
                 
                 # Update counters
                 processed += 1
@@ -820,7 +820,7 @@ class URLProcessor:
                     errors += 1
                 
                 # Update job status for progress tracking
-                self.db_manager.update_job_status(
+                self.db_manager.update_job_status(  # Use db_manager not db
                     job_id=job_id,
                     processed_urls=processed,
                     error_count=errors
@@ -837,7 +837,7 @@ class URLProcessor:
             final_status = "completed_with_errors"
             
         # Update job completion status
-        self.db_manager.update_job_status(
+        self.db_manager.update_job_status(  # Use db_manager not db
             job_id=job_id,
             status=final_status,
             processed_urls=processed,

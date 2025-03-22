@@ -155,19 +155,20 @@ def process_urls_in_background(job_id: str, urls: List[str], prompt_names: List[
 
 def process_urls_in_parallel(job_id: str, urls, prompt_names: List[str],
                            force_browser: bool = False, premium_proxy: bool = False):
-    """Process URLs in parallel with direct ContentAnalyzer usage."""
+    """Process URLs in parallel without using URLProcessor class."""
     try:
         logger.info(f"Starting parallel processing for job {job_id} with {len(urls)} URLs")
         
-        # Create a new event loop for this thread
+        # Create a new event loop
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
         # Initialize counters
         total_urls = len(urls)
-        processed_count = error_count = 0
+        processed_count = 0
+        error_count = 0
         
-        # Update job status to running
+        # Set job status to running
         db.update_job_status(
             job_id=job_id,
             status="running",
@@ -176,21 +177,22 @@ def process_urls_in_parallel(job_id: str, urls, prompt_names: List[str],
             error_count=0
         )
         
-        # Create analyzer instance
+        # Create analyzer
         analyzer_instance = ContentAnalyzer()
-        max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "3"))
         
+        # Define async processing function
         async def process_urls():
-            semaphore = asyncio.Semaphore(max_concurrency)
             nonlocal processed_count, error_count
+            max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "3"))
+            semaphore = asyncio.Semaphore(max_concurrency)
             
-            async def process_with_limit(url_data):
+            async def process_one_url(url_data):
                 async with semaphore:
-                    # Extract URL data
+                    # Extract URL info
                     url = url_data.get('url') if isinstance(url_data, dict) else url_data
                     company_info = url_data.get('company_info') if isinstance(url_data, dict) else None
                     content_type = url_data.get('content_type', 'html') if isinstance(url_data, dict) else 'html'
-                    url_force_browser = url_data.get('force_browser', force_browser) if isinstance(url_data, dict) else force_browser
+                    use_browser = url_data.get('force_browser', force_browser) if isinstance(url_data, dict) else force_browser
                     
                     try:
                         # Process URL
@@ -199,8 +201,10 @@ def process_urls_in_parallel(job_id: str, urls, prompt_names: List[str],
                             prompt_names=prompt_names,
                             company_info=company_info,
                             content_type=content_type,
-                            force_browser=url_force_browser
+                            force_browser=use_browser
                         )
+                        
+                        # Add job ID
                         result['job_id'] = job_id
                         return result
                     except Exception as e:
@@ -213,33 +217,31 @@ def process_urls_in_parallel(job_id: str, urls, prompt_names: List[str],
                             "processed_at": time.time()
                         }
             
-            # Create tasks for all URLs
+            # Create tasks
             tasks = []
             for url_item in urls:
                 if isinstance(url_item, str):
-                    tasks.append(process_with_limit({'url': url_item}))
+                    tasks.append(process_one_url({'url': url_item}))
                 else:
-                    tasks.append(process_with_limit(url_item))
+                    tasks.append(process_one_url(url_item))
             
-            # Process URLs in parallel with controlled concurrency
+            # Run all tasks
             results = await asyncio.gather(*tasks, return_exceptions=True)
             
             # Process results
             for result in results:
                 if isinstance(result, Exception):
-                    logger.error(f"Exception in URL processing: {str(result)}")
+                    logger.error(f"Exception: {str(result)}")
                     error_count += 1
                     continue
                 
+                # Save to database
                 try:
-                    # Save to database
                     db.save_result(result)
                     processed_count += 1
-                    
-                    # Update error count if needed
                     if result.get('status') != 'success':
                         error_count += 1
-                    
+                        
                     # Update job status
                     db.update_job_status(
                         job_id=job_id,
@@ -250,13 +252,13 @@ def process_urls_in_parallel(job_id: str, urls, prompt_names: List[str],
                     logger.error(f"Error saving result: {str(e)}")
                     error_count += 1
             
-            # Final job status
+            # Determine final status
             final_status = "completed"
             if processed_count == 0:
                 final_status = "failed"
             elif error_count > 0:
                 final_status = "completed_with_errors"
-            
+                
             # Update final job status
             db.update_job_status(
                 job_id=job_id,
@@ -268,33 +270,26 @@ def process_urls_in_parallel(job_id: str, urls, prompt_names: List[str],
             
             return processed_count, error_count
         
-        # Run the async function
+        # Run the async processing
         processed, errors = loop.run_until_complete(process_urls())
-        
-        logger.info(f"Completed processing for job {job_id}: {processed}/{total_urls} URLs processed, {errors} errors")
+        logger.info(f"Job {job_id} completed: {processed}/{total_urls} URLs processed, {errors} errors")
         return True
-    
+        
     except Exception as e:
-        logger.error(f"Error in parallel processing for job {job_id}: {str(e)}")
+        logger.error(f"Error in parallel processing: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
         
-        try:
-            db.update_job_status(
-                job_id=job_id,
-                status="failed",
-                error_count=1
-            )
-        except Exception as db_error:
-            logger.error(f"Failed to update job status: {str(db_error)}")
-            
+        # Mark job as failed
+        db.update_job_status(job_id=job_id, status="failed", error_count=1) 
         return False
-    
-    finally:
-        # Clean up
-        if 'loop' in locals() and loop is not None:
-            loop.close()
         
+    finally:
+        # Cleanup
+        if 'loop' in locals():
+            loop.close()
+            
+        # Remove thread from active threads
         if threading.current_thread().ident in active_threads:
             active_threads.remove(threading.current_thread().ident)
 
@@ -513,14 +508,23 @@ def analyze():
             flash('Please select at least one prompt configuration.', 'warning')
             return redirect(url_for('index'))
         
-        # Create a new job - only use parameters accepted by create_job()
+        # Generate a job ID manually
+        import uuid
+        job_id = str(uuid.uuid4())
+        
+        # Create a new job with the adjusted parameters
         job_id = db.create_job(
-            urls=[data.get('url') for data in valid_url_data_list],
-            prompts=prompt_names
+            job_id=job_id,
+            name=f"Analysis {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            prompt_names=prompt_names,
+            urls=[data.get('url') for data in valid_url_data_list]
         )
         
-        # We don't need to store these in the database separately since
-        # the URL data objects already contain this information
+        # Ensure we have a valid job_id
+        if not job_id:
+            flash('Failed to create analysis job', 'danger')
+            return redirect(url_for('index'))
+        
         logger.info(f"Job {job_id} created with force_browser={force_browser}, premium_proxy={premium_proxy}")
         
         # Start processing in a background thread WITH PARALLEL PROCESSING
@@ -534,7 +538,10 @@ def analyze():
         # Add thread ID to active threads
         active_threads.add(thread.ident)
         
-        # Redirect to job status page
+        # Log the job_id for debugging
+        logger.info(f"Redirecting to job status page for job ID: {job_id}")
+        
+        # Redirect to job status page with explicit job_id parameter
         return redirect(url_for('job_status', job_id=job_id))
             
     except Exception as e:
