@@ -47,16 +47,17 @@
                                 {% endif %}
                             </td>
                             <td>
-                                <div class="progress">
-                                    <div class="progress-bar 
-                                        {% if job.status == 'completed' %}bg-success
-                                        {% elif job.status == 'failed' %}bg-danger
-                                        {% elif job.status == 'completed_with_errors' %}bg-warning{% endif %}"
-                                        role="progressbar" style="width: {{ job.progress }}%;"
-                                        aria-valuenow="{{ job.progress }}" aria-valuemin="0" aria-valuemax="100">
-                                        {{ job.progress|int }}%
-                                    </div>
-                                </div>
+   <div class="progress-bar 
+    {% if job.status == 'completed' %}bg-success
+    {% elif job.status == 'failed' %}bg-danger
+    {% elif job.status == 'completed_with_errors' %}bg-warning{% endif %}"
+    role="progressbar" 
+    style="width: {% if job.total_urls and job.total_urls > 0 %}{{ (job.processed_urls / job.total_urls * 100)|int }}{% else %}0{% endif %}%;"
+    aria-valuenow="{% if job.total_urls and job.total_urls > 0 %}{{ (job.processed_urls / job.total_urls * 100)|int }}{% else %}0{% endif %}" 
+    aria-valuemin="0" aria-valuemax="100">
+    {% if job.total_urls and job.total_urls > 0 %}{{ (job.processed_urls / job.total_urls * 100)|int }}{% else %}0{% endif %}%
+</div>
+
                             </td>
                             <td>{{ job.processed_urls }}/{{ job.total_urls }}</td>
                             <td>{{ job.created_at_formatted }}</td>
