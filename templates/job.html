@@ -497,5 +497,273 @@
 </div> {% endblock %}
 {% block scripts %}
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script> <script> // Error chart var errorCtx = document.getElementById('errorChart').getContext('2d'); var errorChart = new Chart(errorCtx, { type: 'pie', data: { labels: ['Scraping Errors', 'Analysis Errors', 'Successful'], datasets: [{ label: 'Error Distribution', data: [ {% if metrics and metrics.scrape_errors is not none %}{{ metrics.scrape_errors }}{% else %}0{% endif %}, {% if metrics and metrics.failed_results is not none and metrics.scrape_errors is not none %} {{ metrics.failed_results - metrics.scrape_errors }} {% else %}0{% endif %}, {% if metrics and metrics.successful_results is not none %}{{ metrics.successful_results }}{% else %}0{% endif %} ], backgroundColor: [ 'rgba(255, 99, 132, 0.2)', 'rgba(255, 159, 64, 0.2)', 'rgba(75, 192, 192, 0.2)' ], borderColor: [ 'rgba(255, 99, 132, 1)', 'rgba(255, 159, 64, 1)', 'rgba(75, 192, 192, 1)' ], borderWidth: 1 }] }, options: { responsive: true, plugins: { legend: { position: 'top', }, title: { display: true, text: 'Processing Results' } } } }); // Job status polling function pollJobStatus(jobId) { // Poll every 2 seconds const statusInterval = setInterval(function() { fetch(`/api/job/${jobId}`) .then(response => response.json()) .then(data => { // Update progress indicators with the response const job = data.job; const metrics = data.metrics; console.log("Job status update:", job.status, `${job.processed_urls}/${job.total_urls}`); // Update progress bar const progress = job.processed_urls / job.total_urls * 100; document.getElementById('progressBar').style.width = `${progress}%`; document.getElementById('progressBar').setAttribute('aria-valuenow', progress); document.getElementById('progressText').innerText = `${job.processed_urls} of ${job.total_urls}`; // Update processed URLs count const processedUrlsCount = document.getElementById('processedUrlsCount'); if (processedUrlsCount) { processedUrlsCount.textContent = `${job.processed_urls}/${job.total_urls}`; } // Check if job is complete or failed if (['completed', 'completed_with_errors', 'failed'].includes(job.status)) { clearInterval(statusInterval); console.log("Job completed with status:", job.status); // Change progress bar color based on status const progressBar = document.getElementById('progressBar'); if (job.status === 'completed') { progressBar.classList.add('bg-success'); } else if (job.status === 'failed') { progressBar.classList.add('bg-danger'); } else if (job.status === 'completed_with_errors') { progressBar.classList.add('bg-warning'); } // Show completion message document.getElementById('jobStatus').innerHTML = `<div class="alert alert-${job.status === 'failed' ? 'danger' : job.status === 'completed_with_errors' ? 'warning' : 'success'}"> <strong>${job.status === 'failed' ? 'Job Failed' : 'Job Complete'}</strong> <p>${job.status === 'completed_with_errors' ? 'Job completed with some errors.' : ''}</p> </div>`; // Enable export buttons document.querySelectorAll('.export-btn').forEach(btn => { btn.disabled = false; }); // Update metrics display updateMetricsDisplay(metrics); // Show the results section if hidden const resultsSection = document.getElementById('resultsSection'); if (resultsSection && resultsSection.classList.contains('hidden')) { resultsSection.classList.remove('hidden'); } // Refresh the page to show all results window.location.reload(); } }) .catch(error => console.error('Error polling job status:', error)); }, 2000); } // Call this function when the page loads with your job ID document.addEventListener('DOMContentLoaded', function() { const jobId = document.getElementById('jobId').value; const jobStatus = '{{ job.status }}'; // Poll for both pending and running jobs if (jobId && (jobStatus === 'running' || jobStatus === 'pending')) { console.log("Starting job polling for job:", jobId); pollJobStatus(jobId); } else { console.log("No polling needed. Job status:", jobStatus); } }); function updateMetricsDisplay(metrics) { // Update metrics in the UI if (!metrics) return; // Update basic metrics elements const metricsElements = { 'total_urls': document.getElementById('metricTotalUrls'), 'total_words': document.getElementById('metricWords'), 'total_tokens': document.getElementById('metricTokens'), 'successful_results': document.getElementById('successfulResultsCount'), 'failed_results': document.getElementById('failedResultsCount') }; for (const [key, element] of Object.entries(metricsElements)) { if (element && metrics[key] !== undefined) { element.innerText = metrics[key].toLocaleString(); } } // Update summary counts const summaryElements = { 'successful_results': document.getElementById('summarySuccessCount'), 'scrape_errors': document.getElementById('summaryScrapeErrors'), }; for (const [key, element] of Object.entries(summaryElements)) { if (element && metrics[key] !== undefined) { element.innerText = metrics[key].toLocaleString(); } } // Update analysis errors (calculated field) const analysisErrorsElement = document.getElementById('summaryAnalysisErrors'); if (analysisErrorsElement && metrics.failed_results !== undefined && metrics.scrape_errors !== undefined) { const analysisErrors = metrics.failed_results - metrics.scrape_errors; analysisErrorsElement.innerText = analysisErrors.toLocaleString(); } // Update success ratio const successRatioElement = document.getElementById('successRatio'); if (successRatioElement && metrics.successful_results !== undefined && metrics.total_urls !== undefined) { successRatioElement.innerText = `${metrics.successful_results}/${metrics.total_urls}`; } // Update failure rate const failureRateElement = document.getElementById('failureRate'); if (failureRateElement && metrics.failed_results !== undefined && metrics.total_urls !== undefined && metrics.total_urls > 0) { const failureRate = (metrics.failed_results / metrics.total_urls * 100).toFixed(1); failureRateElement.innerText = `${failureRate}%`; } // Update cost estimate const costElement = document.getElementById('estimatedCost'); if (costElement && metrics.total_tokens !== undefined) { const cost = ((metrics.total_tokens / 1000) * 0.02).toFixed(2); costElement.innerText = `$${cost}`; } } </script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script> <script>
+    // Error chart initialization
+    var errorCtx = document.getElementById('errorChart').getContext('2d');
+    var errorChart = new Chart(errorCtx, {
+        type: 'pie',
+        data: {
+            labels: ['Scraping Errors', 'Analysis Errors', 'Successful'],
+            datasets: [{
+                label: 'Error Distribution',
+                data: [
+                    {% if metrics and metrics.scrape_errors is not none %}{{ metrics.scrape_errors }}{% else %}0{% endif %},
+                    {% if metrics and metrics.failed_results is not none and metrics.scrape_errors is not none %}
+                        {{ metrics.failed_results - metrics.scrape_errors }}
+                    {% else %}0{% endif %},
+                    {% if metrics and metrics.successful_results is not none %}{{ metrics.successful_results }}{% else %}0{% endif %}
+                ],
+                backgroundColor: [
+                    'rgba(255, 99, 132, 0.2)',
+                    'rgba(255, 159, 64, 0.2)',
+                    'rgba(75, 192, 192, 0.2)'
+                ],
+                borderColor: [
+                    'rgba(255, 99, 132, 1)',
+                    'rgba(255, 159, 64, 1)',
+                    'rgba(75, 192, 192, 1)'
+                ],
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'top',
+                },
+                title: {
+                    display: true,
+                    text: 'Processing Results'
+                }
+            }
+        }
+    });
+
+    // Function to update the chart with new data
+    function updateErrorChart(scrapeErrors, analysisErrors, successful) {
+        if (errorChart) {
+            errorChart.data.datasets[0].data = [
+                scrapeErrors || 0,
+                analysisErrors || 0,
+                successful || 0
+            ];
+            errorChart.update();
+        }
+    }
+
+    // Job status polling
+    function pollJobStatus(jobId) {
+        // Poll every 3 seconds - don't poll too frequently
+        const statusInterval = setInterval(function() {
+            console.log(`Polling job status for ${jobId}...`);
+            
+            fetch(`/api/job/${jobId}`)
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                // Update progress indicators with the response
+                const job = data.job;
+                const metrics = data.metrics || {};
+                
+                console.log("Job status update:", job.status, `${job.processed_urls}/${job.total_urls}`);
+                
+                // Update status badge on page
+                const statusBadges = document.querySelectorAll('.card-header .badge');
+                statusBadges.forEach(badge => {
+                    // Remove all status classes
+                    badge.classList.remove('bg-success', 'bg-primary', 'bg-danger', 'bg-warning', 'bg-info', 'bg-secondary');
+                    
+                    // Set the appropriate class and text
+                    if (job.status === 'completed') {
+                        badge.classList.add('bg-success');
+                        badge.textContent = 'Completed';
+                    } else if (job.status === 'running') {
+                        badge.classList.add('bg-primary');
+                        badge.textContent = 'Running';
+                    } else if (job.status === 'pending') {
+                        badge.classList.add('bg-info');
+                        badge.textContent = 'Pending';
+                    } else if (job.status === 'failed') {
+                        badge.classList.add('bg-danger');
+                        badge.textContent = 'Failed';
+                    } else if (job.status === 'completed_with_errors') {
+                        badge.classList.add('bg-warning');
+                        badge.textContent = 'Completed with Errors';
+                    } else {
+                        badge.classList.add('bg-secondary');
+                        badge.textContent = job.status;
+                    }
+                });
+                
+                // Update progress bar
+                const progress = job.total_urls > 0 ? Math.round((job.processed_urls / job.total_urls) * 100) : 0;
+                const progressBar = document.getElementById('progressBar');
+                if (progressBar) {
+                    progressBar.style.width = `${progress}%`;
+                    progressBar.setAttribute('aria-valuenow', progress);
+                    progressBar.textContent = `${progress}%`;
+                }
+                
+                // Update progress text
+                const progressText = document.getElementById('progressText');
+                if (progressText) {
+                    progressText.innerText = `${job.processed_urls} of ${job.total_urls}`;
+                }
+                
+                // Update processed URLs
+                const processedUrlsElement = document.getElementById('processedUrlsCount');
+                if (processedUrlsElement) {
+                    processedUrlsElement.textContent = `${job.processed_urls}/${job.total_urls}`;
+                }
+                
+                // Update success/error counts
+                const successfulResultsElement = document.getElementById('successfulResultsCount');
+                if (successfulResultsElement) {
+                    successfulResultsElement.textContent = metrics.successful_results || 0;
+                }
+                
+                const failedResultsElement = document.getElementById('failedResultsCount');
+                if (failedResultsElement) {
+                    failedResultsElement.textContent = metrics.failed_results || 0;
+                }
+                
+                // Update chart data
+                const scrapeErrors = metrics.scrape_errors || 0;
+                const failedResults = metrics.failed_results || 0;
+                const analysisErrors = failedResults - scrapeErrors;
+                const successful = metrics.successful_results || 0;
+                updateErrorChart(scrapeErrors, analysisErrors, successful);
+                
+                // Update other metrics
+                updateMetricsDisplay(metrics);
+                
+                // Update alert status
+                const jobStatusAlert = document.getElementById('jobStatus');
+                if (jobStatusAlert) {
+                    let alertClass = 'alert-info';
+                    let statusTitle = 'Job In Progress';
+                    let statusDesc = '';
+                    
+                    if (job.status === 'completed') {
+                        alertClass = 'alert-success';
+                        statusTitle = 'Job Complete';
+                    } else if (job.status === 'failed') {
+                        alertClass = 'alert-danger';
+                        statusTitle = 'Job Failed';
+                    } else if (job.status === 'completed_with_errors') {
+                        alertClass = 'alert-warning';
+                        statusTitle = 'Job Completed With Errors';
+                        statusDesc = 'Job completed but some URLs had errors.';
+                    } else if (job.status === 'pending') {
+                        alertClass = 'alert-info';
+                        statusTitle = 'Job Pending';
+                        statusDesc = 'Job is waiting to be processed.';
+                    } else if (job.status === 'cancelled') {
+                        alertClass = 'alert-secondary';
+                        statusTitle = 'Job Cancelled';
+                    }
+                    
+                    jobStatusAlert.innerHTML = `
+                        <div class="alert ${alertClass}">
+                            <strong>${statusTitle}</strong>
+                            <p>${statusDesc}</p>
+                        </div>`;
+                }
+                
+                // Check if job is complete
+                if (['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(job.status)) {
+                    console.log("Job completed with status:", job.status);
+                    clearInterval(statusInterval);
+                    
+                    // Update progress bar color
+                    if (progressBar) {
+                        progressBar.classList.remove('bg-primary', 'bg-info');
+                        if (job.status === 'completed') {
+                            progressBar.classList.add('bg-success');
+                        } else if (job.status === 'failed') {
+                            progressBar.classList.add('bg-danger');
+                        } else if (job.status === 'completed_with_errors') {
+                            progressBar.classList.add('bg-warning');
+                        }
+                    }
+                    
+                    // Enable export buttons
+                    document.querySelectorAll('.export-btn').forEach(btn => {
+                        btn.disabled = false;
+                    });
+                    
+                    // Show the results section
+                    const resultsSection = document.getElementById('resultsSection');
+                    if (resultsSection && resultsSection.classList.contains('hidden')) {
+                        resultsSection.classList.remove('hidden');
+                        // Reload page only after job completes to show full results
+                        setTimeout(() => window.location.reload(), 1000);
+                    }
+                }
+            })
+            .catch(error => {
+                console.error('Error polling job status:', error);
+            });
+        }, 3000); // Poll every 3 seconds
+        
+        return statusInterval;
+    }
+
+    // Update metrics on the page
+    function updateMetricsDisplay(metrics) {
+        if (!metrics) return;
+        
+        // Update basic metrics
+        const elementsToUpdate = {
+            'metricWords': metrics.total_words || 0,
+            'metricTokens': metrics.total_tokens || 0,
+            'summarySuccessCount': metrics.successful_results || 0,
+            'summaryScrapeErrors': metrics.scrape_errors || 0,
+            'summaryAnalysisErrors': metrics.failed_results ? (metrics.failed_results - metrics.scrape_errors) : 0,
+            'successRatio': metrics.successful_results && metrics.total_urls ? 
+                `${metrics.successful_results}/${metrics.total_urls}` : '0/0',
+            'failureRate': metrics.failed_results && metrics.total_urls ? 
+                `${((metrics.failed_results / metrics.total_urls) * 100).toFixed(1)}%` : '0%',
+            'avgTokensPerUrl': metrics.total_tokens && metrics.successful_results ? 
+                Math.round(metrics.total_tokens / metrics.successful_results) : 0,
+            'estimatedCost': metrics.total_tokens ? 
+                `$${((metrics.total_tokens / 1000) * 0.02).toFixed(2)}` : '$0.00'
+        };
+        
+        // Update each element if it exists
+        for (const [id, value] of Object.entries(elementsToUpdate)) {
+            const element = document.getElementById(id);
+            if (element) {
+                // Format numbers with commas for thousands
+                if (typeof value === 'number') {
+                    element.textContent = value.toLocaleString();
+                } else {
+                    element.textContent = value;
+                }
+            }
+        }
+    }
+
+    // Start polling when page loads
+    document.addEventListener('DOMContentLoaded', function() {
+        const jobId = document.getElementById('jobId').value;
+        const initialStatus = '{{ job.status }}';
+        
+        console.log("Page loaded. Job ID:", jobId, "Status:", initialStatus);
+        
+        // Poll for both pending and running jobs
+        if (jobId && ['pending', 'running'].includes(initialStatus)) {
+            console.log("Starting polling for job:", jobId);
+            const interval = pollJobStatus(jobId);
+            
+            // Store interval ID in window object so it can be cleared if needed
+            window.pollInterval = interval;
+        }
+    });
+</script>
 {% endblock %}

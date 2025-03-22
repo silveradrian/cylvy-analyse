@@ -152,13 +152,18 @@ class ContentAnalyzer:
             self.scrapingbee_rate_limiter = AdvancedRateLimiter(50)
             self.async_scrapingbee_rate_limiter = AsyncAdvancedRateLimiter(50)
     
+
     async def scrape_url_async(self, url: str, content_type: str = "html", 
-                    force_browser: bool = False) -> Dict[str, Any]:
+                    force_browser: bool = False, retry_attempt: int = 0) -> Dict[str, Any]:
         """
         Asynchronously scrape content from a URL using ScrapingBee's API.
+        Includes automatic retry with enhanced options on failure.
         """
+        # Make sure we import re for text normalization
+        import re
+        
         try:
-            logger.info(f"Async scraping URL with ScrapingBee: {url}")
+            logger.info(f"Async scraping URL with ScrapingBee: {url}{' (retry attempt '+str(retry_attempt)+')' if retry_attempt > 0 else ''}")
             
             # Only handle HTML for now
             if content_type.lower() != 'html':
@@ -185,15 +190,26 @@ class ContentAnalyzer:
             
             start_time = time.time()
             
-            # Skip the rate limiter and execute directly
+            # Determine scraping parameters
+            # On retry or if force_browser is True, use enhanced options
+            use_enhanced_options = force_browser or retry_attempt > 0
+            
+            # Set parameters based on retry attempt level
+            params = {
+                "render_js": "true" if use_enhanced_options else "false",
+                "premium_proxy": "true" if use_enhanced_options else "false"
+            }
+            
+            # On second retry, try stealth proxy as a last resort
+            if retry_attempt >= 2:
+                params["stealth_proxy"] = "true"
+                logger.info(f"Using stealth proxy for final retry attempt on {url}")
+            
+            logger.info(f"Scraping {url} with params: {params}")
+            
             # Use ThreadPoolExecutor since ScrapingBee client is not async
             with ThreadPoolExecutor() as executor:
                 loop = asyncio.get_event_loop()
-                
-                params = {
-                    "render_js": "true" if force_browser else "false",
-                    "premium_proxy": "true" if force_browser else "false"
-                }
                 
                 response = await loop.run_in_executor(
                     executor,
@@ -204,11 +220,38 @@ class ContentAnalyzer:
             
             # Check response status
             if response.status_code != 200:
-                logger.error(f"ScrapingBee error: {response.status_code} - {response.text}")
+                # Create a sanitized error message without HTML
+                clean_error = self._sanitize_error_response(response)
+                error_message = f"ScrapingBee error: {response.status_code} - {clean_error}"
+                logger.error(error_message)
+                
+                # Check if this is an error that would benefit from a retry with enhanced options
+                if retry_attempt < 2 and not (params.get("render_js") == "true" and params.get("premium_proxy") == "true"):
+                    retry_error_indicators = [
+                        "403", "500", "429", "404",  # Status codes
+                        "try with render_js=True", 
+                        "try with premium_proxy=True",
+                        "blocked", "captcha", "cloudflare",
+                        "Error with your request"
+                    ]
+                    
+                    should_retry = any(indicator in str(response.status_code) for indicator in ["403", "500", "429", "404"])
+                    
+                    response_text = clean_error
+                    if not should_retry and response_text:
+                        should_retry = any(indicator.lower() in response_text.lower() for indicator in retry_error_indicators)
+                    
+                    if should_retry:
+                        logger.warning(f"Retrying {url} with enhanced options (attempt {retry_attempt+1})")
+                        await asyncio.sleep(1 * (retry_attempt + 1))  # Progressive delay
+                        return await self.scrape_url_async(url, content_type, True, retry_attempt + 1)
+                
+                # Return the error if we've exhausted retries or enhanced options didn't help
                 return {
-                    "error": f"ScrapingBee returned status code {response.status_code}: {response.text}",
+                    "error": error_message,
                     "url": url,
-                    "status": "error"
+                    "status": "scrape_error",
+                    "retry_attempts": retry_attempt
                 }
             
             # Process HTML content
@@ -222,15 +265,87 @@ class ContentAnalyzer:
             if soup.title:
                 title = soup.title.text.strip()
             
-            # Clean up the HTML
-            for element in soup(["script", "style", "noscript", "iframe", "head"]):
-                element.extract()
+            # IMPROVED CONTENT EXTRACTION:
             
-            # Get the text content
-            text = soup.get_text(separator="\n", strip=True)
+            # 1. Remove unwanted elements more aggressively
+            for selector in [
+                "script", "style", "noscript", "iframe", "head", 
+                "footer", "nav"
+            ]:
+                for element in soup.find_all(selector):
+                    element.extract()
+                    
+            # Also try to remove common non-content elements by class/id
+            for selector in [
+                "[role=banner]", "[role=navigation]", "[role=complementary]", "[role=contentinfo]",
+                ".cookie-banner", ".cookie-consent", ".newsletter-signup",
+                ".ad", ".advertisement", ".sidebar", "header"
+            ]:
+                try:
+                    for element in soup.select(selector):
+                        element.extract()
+                except:
+                    pass  # Ignore errors with advanced selectors
+            
+            # 2. Try to find the main content using common content selectors
+            main_content_selectors = [
+                "main", "article", "[role=main]", "#content", ".content", 
+                "#main-content", ".main-content", ".post-content",
+                ".entry-content", "[itemprop=articleBody]"
+            ]
+            
+            main_content = None
+            found_selector = None
+            for selector in main_content_selectors:
+                try:
+                    elements = soup.select(selector)
+                    if elements:
+                        # Use the largest matching element (by text length)
+                        main_content = max(elements, key=lambda e: len(e.get_text()))
+                        found_selector = selector
+                        break
+                except:
+                    continue  # Skip if selector syntax error
+            
+            # 3. Extract text from the main content if found, otherwise from the whole page
+            if main_content:
+                text = main_content.get_text(separator="\n", strip=True)
+                logger.info(f"Found main content using selector: {found_selector}")
+            else:
+                # Fall back to the whole page but with smarter text extraction
+                logger.info(f"No main content container found, extracting from whole page")
+                
+                # Get all text nodes with some minimum length to avoid menu items and buttons
+                paragraphs = []
+                
+                # Try to find paragraph-like elements or text blocks
+                for p in soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'div']):
+                    p_text = p.get_text(strip=True)
+                    # Only include paragraphs with reasonable content (ignore short menu items, etc.)
+                    if len(p_text) > 30:  # Minimum paragraph length
+                        paragraphs.append(p.get_text(separator=" ", strip=True))
+                
+                if paragraphs:
+                    text = "\n\n".join(paragraphs)
+                else:
+                    # Last resort: just get all text
+                    text = soup.get_text(separator="\n", strip=True)
+            
+            # 4. Remove excessive whitespace and normalize
+            text = re.sub(r'\s+', ' ', text).strip()
+            text = re.sub(r'\n\s*\n', '\n\n', text)
             
             # Count words
             word_count = len(text.split())
+            
+            # Log content extraction results
+            logger.info(f"Extracted {word_count} words from {url}")
+            
+            # Check if the content seems too short (likely blocked or empty page)
+            if word_count < 50 and retry_attempt < 2 and not use_enhanced_options:
+                logger.warning(f"Content for {url} seems too short ({word_count} words). Retrying with enhanced options.")
+                await asyncio.sleep(1)
+                return await self.scrape_url_async(url, content_type, True, retry_attempt + 1)
             
             result = {
                 "url": url,
@@ -239,7 +354,9 @@ class ContentAnalyzer:
                 "word_count": word_count,
                 "status": "success",
                 "content_type": "html",
-                "scrape_time": duration
+                "scrape_time": duration,
+                "enhanced_scraping": use_enhanced_options,
+                "retry_attempts": retry_attempt
             }
             
             logger.info(f"Successfully scraped {url} - {result.get('word_count', 0)} words in {duration:.2f}s")
@@ -247,11 +364,72 @@ class ContentAnalyzer:
             
         except Exception as e:
             logger.error(f"Error scraping {url}: {str(e)}")
+            
+            # If this is not yet a retry and we have a connection error, try again with enhanced options
+            connection_errors = ["connection", "timeout", "too many requests", "reset by peer"]
+            if retry_attempt < 2 and not force_browser and any(err in str(e).lower() for err in connection_errors):
+                logger.warning(f"Connection error for {url}. Retrying with enhanced options after delay.")
+                await asyncio.sleep(2 * (retry_attempt + 1))  # Progressive delay for connection issues
+                return await self.scrape_url_async(url, content_type, True, retry_attempt + 1)
+                
             return {
                 "error": str(e),
                 "url": url, 
-                "status": "error"
+                "status": "scrape_error",
+                "retry_attempts": retry_attempt
             }
+
+    def _sanitize_error_response(self, response):
+        """
+        Sanitize error responses to avoid storing HTML in the database or showing it in exports.
+        
+        Args:
+            response: The response object from ScrapingBee
+            
+        Returns:
+            A cleaned error message without HTML
+        """
+        import re
+        try:
+            # Try to parse as JSON first
+            if response.text and response.text.strip().startswith('{'):
+                error_info = json.loads(response.text)
+                # Extract useful fields from the error JSON
+                error_reason = error_info.get('reason', '')
+                error_help = error_info.get('help', '')
+                if error_reason and error_help:
+                    return f"Reason: {error_reason}. Help: {error_help}"
+                elif error_reason:
+                    return f"Reason: {error_reason}"
+                else:
+                    return "Unknown error (JSON response with no reason field)"
+            
+            # If it contains HTML, try to extract useful information
+            if "<html" in response.text.lower():
+                try:
+                    # Try to extract title
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    title = soup.title.text.strip() if soup.title else None
+                    if title:
+                        return f"HTML response - Title: {title}"
+                    else:
+                        # If no title, just indicate it was HTML and the size
+                        size_kb = len(response.text) / 1024
+                        return f"HTML response ({size_kb:.1f}KB)"
+                except:
+                    return "HTML response (parsing failed)"
+            
+            # If not HTML or JSON, return a short preview
+            if len(response.text) > 100:
+                return response.text[:100].replace('\n', ' ') + "..."
+            
+            # If it's short enough, return as is
+            return response.text.replace('\n', ' ')
+            
+        except Exception as e:
+            # If anything fails in the sanitization, return a safe message
+            return f"Error response (sanitization failed: {str(e)})"
+    
 
     async def analyze_batch_with_prompt(self, contents: List[str], prompt_config: Dict[str, Any],
                                       company_infos: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
