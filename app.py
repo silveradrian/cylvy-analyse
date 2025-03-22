@@ -206,6 +206,58 @@ def get_attribute(obj, attr, default=""):
 
 # Flask routes
 
+@app.route('/api/debug/job/<job_id>/data')
+def debug_job_data(job_id):
+    """Debug endpoint to examine the data structure for a job."""
+    try:
+        results = db.get_results_for_job(job_id)
+        if not results:
+            return jsonify({"error": "No results found"})
+            
+        # Get the first result
+        result = results[0]
+        
+        # Basic info
+        response = {
+            "job_id": job_id,
+            "result_keys": list(result.keys()),
+            "result_values": {}
+        }
+        
+        # Add basic values
+        for key in ['url', 'status', 'title', 'word_count', 'content_type']:
+            if key in result:
+                response["result_values"][key] = result[key]
+        
+        # Check data field
+        if 'data' in result:
+            data_value = result['data']
+            response["data_type"] = str(type(data_value))
+            response["data_sample"] = str(data_value)[:500] if isinstance(data_value, str) else "Not a string"
+            
+            # Try to parse if it's a string
+            if isinstance(data_value, str):
+                try:
+                    parsed = json.loads(data_value)
+                    response["parsed_data_keys"] = list(parsed.keys()) if isinstance(parsed, dict) else "Not a dict"
+                    
+                    # Check for structured data
+                    if isinstance(parsed, dict) and 'structured_data' in parsed:
+                        struct_data = parsed['structured_data']
+                        response["structured_data_keys"] = list(struct_data.keys()) if isinstance(struct_data, dict) else "Not a dict"
+                        
+                        if isinstance(struct_data, dict):
+                            for prompt_name, fields in struct_data.items():
+                                response[f"prompt_{prompt_name}_field_count"] = len(fields) if isinstance(fields, dict) else "Not a dict"
+                                response[f"prompt_{prompt_name}_fields"] = list(fields.keys())[:10] if isinstance(fields, dict) else "Not a dict"
+                except Exception as e:
+                    response["json_parse_error"] = str(e)
+        
+        return jsonify(response)
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
 @app.route('/debug/schema')
 def debug_schema():
     """Debug endpoint to view database schema"""
