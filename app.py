@@ -23,6 +23,7 @@ from flask import Flask, request, jsonify, render_template, redirect, url_for, s
 from db_manager import db
 from analyzer import ContentAnalyzer
 from prompt_loader import list_available_prompts, get_prompt_by_name, PromptLoader
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -234,9 +235,12 @@ def process_urls_in_parallel(job_id: str, url_data_list: List[Dict[str, Any]],
 
 def process_urls_in_background(job_id, url_data_list, prompt_names, company_info=None):
     """
-    Process URLs in background thread.
+    Process URLs in background thread using concurrency.
     """
     try:
+        import concurrent.futures
+        from concurrent.futures import ThreadPoolExecutor
+        
         logger.info(f"Starting background processing for job {job_id} with {len(url_data_list)} URLs")
         
         # Verify job_id is present
@@ -248,10 +252,24 @@ def process_urls_in_background(job_id, url_data_list, prompt_names, company_info
         processed_count = 0
         error_count = 0
         
-        # Process each URL
+        # Update job status to running
+        db.update_job_status(
+            job_id=job_id,
+            status="running",
+            total_urls=len(url_data_list),
+            processed_urls=0,
+            error_count=0
+        )
+        
+        # Initialize analyzer
         analyzer = ContentAnalyzer()
         
-        for url_data in url_data_list:
+        # Determine max concurrency - use environment variable or default to 20
+        max_workers = min(int(os.environ.get('MAX_CONCURRENCY', '20')), len(url_data_list))
+        logger.info(f"Processing with max concurrency of {max_workers} workers")
+        
+        # Define function to process a single URL
+        def process_single_url(url_data):
             try:
                 # Get URL from data
                 url = url_data.get('url') if isinstance(url_data, dict) else url_data
@@ -263,33 +281,70 @@ def process_urls_in_background(job_id, url_data_list, prompt_names, company_info
                     company_info=company_info
                 )
                 
-                # CRITICAL FIX: Ensure job_id is set
+                # Ensure job_id is set
                 result['job_id'] = job_id
                 
-                # Save result
-                db.save_result(result)
-                
-                # Update counters
-                processed_count += 1
-                if result.get('status') != 'success':
-                    error_count += 1
-                
-                # Update job status
-                db.update_job_status(
-                    job_id=job_id,
-                    processed_urls=processed_count,
-                    error_count=error_count
-                )
-                
-                logger.info(f"Processed URL {processed_count}/{len(url_data_list)} for job {job_id}")
-                
+                return result, None  # Return result and no error
             except Exception as e:
-                logger.error(f"Error processing URL: {str(e)}")
-                error_count += 1
+                logger.error(f"Error processing URL {url}: {str(e)}")
+                return None, str(e)  # Return no result and the error
+        
+        # Use ThreadPoolExecutor to process URLs concurrently
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all URLs for processing
+            future_to_url = {executor.submit(process_single_url, url_data): url_data 
+                            for url_data in url_data_list}
+            
+            # Process results as they complete
+            for future in concurrent.futures.as_completed(future_to_url):
+                url_data = future_to_url[future]
+                url = url_data.get('url') if isinstance(url_data, dict) else url_data
+                
+                try:
+                    result, error = future.result()
+                    
+                    # Update counters
+                    processed_count += 1
+                    
+                    if error:
+                        error_count += 1
+                        logger.error(f"Error processing URL {url}: {error}")
+                    else:
+                        # Save result to database
+                        db.save_result(result)
+                        
+                        # Check if result indicates an error
+                        if result.get('status') != 'success':
+                            error_count += 1
+                    
+                    # Update job status
+                    db.update_job_status(
+                        job_id=job_id,
+                        status="running",
+                        processed_urls=processed_count,
+                        error_count=error_count
+                    )
+                    
+                    logger.info(f"Processed URL {processed_count}/{len(url_data_list)} for job {job_id}")
+                    
+                except Exception as e:
+                    processed_count += 1
+                    error_count += 1
+                    logger.error(f"Error handling result for URL {url}: {str(e)}")
+                    
+                    # Update job status
+                    db.update_job_status(
+                        job_id=job_id,
+                        status="running",
+                        processed_urls=processed_count,
+                        error_count=error_count
+                    )
         
         # Update job status to completed
         final_status = "completed"
-        if error_count > 0:
+        if processed_count == 0:
+            final_status = "failed"
+        elif error_count > 0:
             final_status = "completed_with_errors"
         
         db.update_job_status(
@@ -301,20 +356,25 @@ def process_urls_in_background(job_id, url_data_list, prompt_names, company_info
         )
         
         logger.info(f"Completed background processing for job {job_id} - status: {final_status}")
+        return True
         
     except Exception as e:
         logger.error(f"Error in background processing: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         
         # Update job status to failed
         try:
             db.update_job_status(
                 job_id=job_id,
                 status="failed",
-                error_count=1
+                error_count=error_count if 'error_count' in locals() else 1
             )
         except:
             pass
         
+        return False
+    
     finally:
         # Remove thread from active threads
         if threading.current_thread().ident in active_threads:
@@ -718,6 +778,27 @@ def api_job_status(job_id):
     
     # Get metrics
     metrics = db.get_job_metrics(job_id)
+    
+    # If job status is "pending" but processing has started, update to "running"
+    if job.get('status') == 'pending' and job.get('processed_urls', 0) > 0:
+        db.update_job_status(
+            job_id=job_id,
+            status='running'
+        )
+        job['status'] = 'running'
+    
+    # If job status is "running" but all URLs have been processed, update to "completed"
+    if job.get('status') == 'running' and job.get('processed_urls') == job.get('total_urls'):
+        final_status = 'completed'
+        if metrics.get('failed_results', 0) > 0:
+            final_status = 'completed_with_errors'
+            
+        db.update_job_status(
+            job_id=job_id,
+            status=final_status,
+            completed_at=datetime.now().isoformat()
+        )
+        job['status'] = final_status
     
     return jsonify({
         'job': job,

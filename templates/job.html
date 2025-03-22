@@ -12,6 +12,7 @@
         <strong>
             {% if job.status == 'completed' %}Job Complete
             {% elif job.status == 'running' %}Job In Progress
+            {% elif job.status == 'pending' %}Job Pending
             {% elif job.status == 'failed' %}Job Failed
             {% elif job.status == 'completed_with_errors' %}Job Completed With Errors
             {% else %}{{ job.status|capitalize }}
@@ -30,6 +31,8 @@
                 <span class="badge bg-success">Completed</span>
             {% elif job.status == 'running' %}
                 <span class="badge bg-primary">Running</span>
+            {% elif job.status == 'pending' %}
+                <span class="badge bg-info">Pending</span>
             {% elif job.status == 'failed' %}
                 <span class="badge bg-danger">Failed</span>
             {% elif job.status == 'cancelled' %}
@@ -41,12 +44,12 @@
             {% endif %}
         </h5>
         <div>
-            {% if job.status != 'running' %}
+            {% if job.status != 'running' and job.status != 'pending' %}
                 <div class="btn-group">
-                    <a href="{{ url_for('export_job', job_id=job.job_id, format='csv') }}" class="btn btn-outline-success btn-sm export-btn" title="Download all results as CSV" {{ 'disabled' if job.status == 'running' else '' }}>
+                    <a href="{{ url_for('export_job', job_id=job.job_id, format='csv') }}" class="btn btn-outline-success btn-sm export-btn" title="Download all results as CSV">
                         <i class="bi bi-file-earmark-spreadsheet"></i> Export CSV
                     </a>
-                    <a href="{{ url_for('export_job', job_id=job.job_id, format='excel') }}" class="btn btn-outline-success btn-sm export-btn" title="Download all results as Excel" {{ 'disabled' if job.status == 'running' else '' }}>
+                    <a href="{{ url_for('export_job', job_id=job.job_id, format='excel') }}" class="btn btn-outline-success btn-sm export-btn" title="Download all results as Excel">
                         <i class="bi bi-file-earmark-excel"></i> Export Excel
                     </a>
                     {% if job.status != 'completed' and job.status != 'cancelled' %}
@@ -87,6 +90,8 @@
                                 <span class="badge bg-success">Completed</span>
                             {% elif job.status == 'running' %}
                                 <span class="badge bg-primary">Running</span>
+                            {% elif job.status == 'pending' %}
+                                <span class="badge bg-info">Pending</span>
                             {% elif job.status == 'failed' %}
                                 <span class="badge bg-danger">Failed</span>
                             {% elif job.status == 'cancelled' %}
@@ -126,15 +131,15 @@
                     </tr>
                     <tr>
                         <th>Processed:</th>
-                        <td>{{ job.processed_urls }}/{{ job.total_urls }}</td>
+                        <td id="processedUrlsCount">{{ job.processed_urls }}/{{ job.total_urls }}</td>
                     </tr>
                     <tr>
                         <th>Success:</th>
-                        <td>{{ metrics.successful_results|default(0) }}</td>
+                        <td id="successfulResultsCount">{{ metrics.successful_results|default(0) }}</td>
                     </tr>
                     <tr>
                         <th>Errors:</th>
-                        <td>{{ metrics.failed_results|default(0) }}</td>
+                        <td id="failedResultsCount">{{ metrics.failed_results|default(0) }}</td>
                     </tr>
                 </table>
 
@@ -169,11 +174,11 @@
                                 </div>
                                 <div class="d-flex justify-content-between mb-2">
                                     <span>Successful URLs:</span>
-                                    <strong>{{ metrics.successful_results|default(0) }}/{{ job.total_urls|default(0) }}</strong>
+                                    <strong id="successRatio">{{ metrics.successful_results|default(0) }}/{{ job.total_urls|default(0) }}</strong>
                                 </div>
                                 <div class="d-flex justify-content-between">
                                     <span>Failure Rate:</span>
-                                    <strong>
+                                    <strong id="failureRate">
                                         {% if metrics.failed_results is defined and job.total_urls and job.total_urls > 0 %}
                                             {{ ((metrics.failed_results / job.total_urls) * 100)|round(1) }}%
                                         {% else %}
@@ -194,7 +199,7 @@
                                 </div>
                                 <div class="d-flex justify-content-between mb-2">
                                     <span>Avg Tokens / URL:</span>
-                                    <strong>
+                                    <strong id="avgTokensPerUrl">
                                         {% if metrics.total_tokens is defined and metrics.successful_results is defined and metrics.successful_results > 0 %}
                                             {{ (metrics.total_tokens / metrics.successful_results)|round|int }}
                                         {% else %}
@@ -204,7 +209,7 @@
                                 </div>
                                 <div class="d-flex justify-content-between">
                                     <span>Estimated Cost:</span>
-                                    <strong>
+                                    <strong id="estimatedCost">
                                         {% if metrics.total_tokens is defined %}
                                             ${{ ((metrics.total_tokens / 1000) * 0.02)|round(2) }}
                                         {% else %}
@@ -230,15 +235,15 @@
                         <div class="list-group">
                             <div class="list-group-item d-flex justify-content-between align-items-center">
                                 Successful
-                                <span class="badge bg-success rounded-pill">{{ metrics.successful_results|default(0) }}</span>
+                                <span id="summarySuccessCount" class="badge bg-success rounded-pill">{{ metrics.successful_results|default(0) }}</span>
                             </div>
                             <div class="list-group-item d-flex justify-content-between align-items-center">
                                 Scraping Errors
-                                <span class="badge bg-danger rounded-pill">{{ metrics.scrape_errors|default(0) }}</span>
+                                <span id="summaryScrapeErrors" class="badge bg-danger rounded-pill">{{ metrics.scrape_errors|default(0) }}</span>
                             </div>
                             <div class="list-group-item d-flex justify-content-between align-items-center">
                                 Analysis Errors
-                                <span class="badge bg-warning text-dark rounded-pill">
+                                <span id="summaryAnalysisErrors" class="badge bg-warning text-dark rounded-pill">
                                     {% if metrics.failed_results is defined and metrics.scrape_errors is defined %}
                                         {{ metrics.failed_results - metrics.scrape_errors }}
                                     {% else %}
@@ -255,7 +260,7 @@
 </div>
 
 <!-- Results table -->
-<div class="card shadow-sm" id="resultsSection" class="{{ 'hidden' if job.status == 'running' else '' }}">
+<div id="resultsSection" class="card shadow-sm {{ 'hidden' if job.status in ['pending', 'running'] else '' }}">
     <div class="card-header bg-primary text-white">
         <h5 class="mb-0">URL Results</h5>
     </div>
@@ -492,5 +497,5 @@
 </div> {% endblock %}
 {% block scripts %}
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script> <script> // Error chart var errorCtx = document.getElementById('errorChart').getContext('2d'); var errorChart = new Chart(errorCtx, { type: 'pie', data: { labels: ['Scraping Errors', 'Analysis Errors', 'Successful'], datasets: [{ label: 'Error Distribution', data: [ {% if metrics and metrics.scrape_errors is not none %}{{ metrics.scrape_errors }}{% else %}0{% endif %}, {% if metrics and metrics.failed_results is not none and metrics.scrape_errors is not none %} {{ metrics.failed_results - metrics.scrape_errors }} {% else %}0{% endif %}, {% if metrics and metrics.successful_results is not none %}{{ metrics.successful_results }}{% else %}0{% endif %} ], backgroundColor: [ 'rgba(255, 99, 132, 0.2)', 'rgba(255, 159, 64, 0.2)', 'rgba(75, 192, 192, 0.2)' ], borderColor: [ 'rgba(255, 99, 132, 1)', 'rgba(255, 159, 64, 1)', 'rgba(75, 192, 192, 1)' ], borderWidth: 1 }] }, options: { responsive: true, plugins: { legend: { position: 'top', }, title: { display: true, text: 'Processing Results' } } } }); // Job status polling function pollJobStatus(jobId) { // Poll every 2 seconds const statusInterval = setInterval(function() { fetch(`/api/job/${jobId}`) .then(response => response.json()) .then(data => { // Update progress indicators with the response const job = data.job; const metrics = data.metrics; console.log("Job status update:", job.status, `${job.processed_urls}/${job.total_urls}`); // Update progress bar const progress = job.processed_urls / job.total_urls * 100; document.getElementById('progressBar').style.width = `${progress}%`; document.getElementById('progressBar').setAttribute('aria-valuenow', progress); document.getElementById('progressText').innerText = `${job.processed_urls} of ${job.total_urls}`; // Check if job is complete if (['completed', 'completed_with_errors', 'failed'].includes(job.status)) { clearInterval(statusInterval); console.log("Job completed with status:", job.status); // Change progress bar color based on status const progressBar = document.getElementById('progressBar'); if (job.status === 'completed') { progressBar.classList.add('bg-success'); } else if (job.status === 'failed') { progressBar.classList.add('bg-danger'); } else if (job.status === 'completed_with_errors') { progressBar.classList.add('bg-warning'); } // Show completion message document.getElementById('jobStatus').innerHTML = `<div class="alert alert-${job.status === 'failed' ? 'danger' : job.status === 'completed_with_errors' ? 'warning' : 'success'}"> <strong>${job.status === 'failed' ? 'Job Failed' : 'Job Complete'}</strong> <p>${job.status === 'completed_with_errors' ? 'Job completed with some errors.' : ''}</p> </div>`; // Enable export buttons document.querySelectorAll('.export-btn').forEach(btn => { btn.disabled = false; }); // Update metrics display updateMetricsDisplay(metrics); // Show the results section if hidden const resultsSection = document.getElementById('resultsSection'); if (resultsSection && resultsSection.classList.contains('hidden')) { resultsSection.classList.remove('hidden'); } // Refresh the page to show all results window.location.reload(); } }) .catch(error => console.error('Error polling job status:', error)); }, 2000); } // Call this function when the page loads with your job ID document.addEventListener('DOMContentLoaded', function() { const jobId = document.getElementById('jobId').value; const jobStatus = '{{ job.status }}'; if (jobId && jobStatus === 'running') { console.log("Starting job polling for job:", jobId); pollJobStatus(jobId); } else { console.log("No polling needed. Job status:", jobStatus); } }); function updateMetricsDisplay(metrics) { // Update metrics in the UI if (!metrics) return; const metricsElements = { 'total_urls': document.getElementById('metricTotalUrls'), 'total_words': document.getElementById('metricWords'), 'total_tokens': document.getElementById('metricTokens') }; for (const [key, element] of Object.entries(metricsElements)) { if (element && metrics[key] !== undefined) { element.innerText = metrics[key].toLocaleString(); } } } </script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script> <script> // Error chart var errorCtx = document.getElementById('errorChart').getContext('2d'); var errorChart = new Chart(errorCtx, { type: 'pie', data: { labels: ['Scraping Errors', 'Analysis Errors', 'Successful'], datasets: [{ label: 'Error Distribution', data: [ {% if metrics and metrics.scrape_errors is not none %}{{ metrics.scrape_errors }}{% else %}0{% endif %}, {% if metrics and metrics.failed_results is not none and metrics.scrape_errors is not none %} {{ metrics.failed_results - metrics.scrape_errors }} {% else %}0{% endif %}, {% if metrics and metrics.successful_results is not none %}{{ metrics.successful_results }}{% else %}0{% endif %} ], backgroundColor: [ 'rgba(255, 99, 132, 0.2)', 'rgba(255, 159, 64, 0.2)', 'rgba(75, 192, 192, 0.2)' ], borderColor: [ 'rgba(255, 99, 132, 1)', 'rgba(255, 159, 64, 1)', 'rgba(75, 192, 192, 1)' ], borderWidth: 1 }] }, options: { responsive: true, plugins: { legend: { position: 'top', }, title: { display: true, text: 'Processing Results' } } } }); // Job status polling function pollJobStatus(jobId) { // Poll every 2 seconds const statusInterval = setInterval(function() { fetch(`/api/job/${jobId}`) .then(response => response.json()) .then(data => { // Update progress indicators with the response const job = data.job; const metrics = data.metrics; console.log("Job status update:", job.status, `${job.processed_urls}/${job.total_urls}`); // Update progress bar const progress = job.processed_urls / job.total_urls * 100; document.getElementById('progressBar').style.width = `${progress}%`; document.getElementById('progressBar').setAttribute('aria-valuenow', progress); document.getElementById('progressText').innerText = `${job.processed_urls} of ${job.total_urls}`; // Update processed URLs count const processedUrlsCount = document.getElementById('processedUrlsCount'); if (processedUrlsCount) { processedUrlsCount.textContent = `${job.processed_urls}/${job.total_urls}`; } // Check if job is complete or failed if (['completed', 'completed_with_errors', 'failed'].includes(job.status)) { clearInterval(statusInterval); console.log("Job completed with status:", job.status); // Change progress bar color based on status const progressBar = document.getElementById('progressBar'); if (job.status === 'completed') { progressBar.classList.add('bg-success'); } else if (job.status === 'failed') { progressBar.classList.add('bg-danger'); } else if (job.status === 'completed_with_errors') { progressBar.classList.add('bg-warning'); } // Show completion message document.getElementById('jobStatus').innerHTML = `<div class="alert alert-${job.status === 'failed' ? 'danger' : job.status === 'completed_with_errors' ? 'warning' : 'success'}"> <strong>${job.status === 'failed' ? 'Job Failed' : 'Job Complete'}</strong> <p>${job.status === 'completed_with_errors' ? 'Job completed with some errors.' : ''}</p> </div>`; // Enable export buttons document.querySelectorAll('.export-btn').forEach(btn => { btn.disabled = false; }); // Update metrics display updateMetricsDisplay(metrics); // Show the results section if hidden const resultsSection = document.getElementById('resultsSection'); if (resultsSection && resultsSection.classList.contains('hidden')) { resultsSection.classList.remove('hidden'); } // Refresh the page to show all results window.location.reload(); } }) .catch(error => console.error('Error polling job status:', error)); }, 2000); } // Call this function when the page loads with your job ID document.addEventListener('DOMContentLoaded', function() { const jobId = document.getElementById('jobId').value; const jobStatus = '{{ job.status }}'; // Poll for both pending and running jobs if (jobId && (jobStatus === 'running' || jobStatus === 'pending')) { console.log("Starting job polling for job:", jobId); pollJobStatus(jobId); } else { console.log("No polling needed. Job status:", jobStatus); } }); function updateMetricsDisplay(metrics) { // Update metrics in the UI if (!metrics) return; // Update basic metrics elements const metricsElements = { 'total_urls': document.getElementById('metricTotalUrls'), 'total_words': document.getElementById('metricWords'), 'total_tokens': document.getElementById('metricTokens'), 'successful_results': document.getElementById('successfulResultsCount'), 'failed_results': document.getElementById('failedResultsCount') }; for (const [key, element] of Object.entries(metricsElements)) { if (element && metrics[key] !== undefined) { element.innerText = metrics[key].toLocaleString(); } } // Update summary counts const summaryElements = { 'successful_results': document.getElementById('summarySuccessCount'), 'scrape_errors': document.getElementById('summaryScrapeErrors'), }; for (const [key, element] of Object.entries(summaryElements)) { if (element && metrics[key] !== undefined) { element.innerText = metrics[key].toLocaleString(); } } // Update analysis errors (calculated field) const analysisErrorsElement = document.getElementById('summaryAnalysisErrors'); if (analysisErrorsElement && metrics.failed_results !== undefined && metrics.scrape_errors !== undefined) { const analysisErrors = metrics.failed_results - metrics.scrape_errors; analysisErrorsElement.innerText = analysisErrors.toLocaleString(); } // Update success ratio const successRatioElement = document.getElementById('successRatio'); if (successRatioElement && metrics.successful_results !== undefined && metrics.total_urls !== undefined) { successRatioElement.innerText = `${metrics.successful_results}/${metrics.total_urls}`; } // Update failure rate const failureRateElement = document.getElementById('failureRate'); if (failureRateElement && metrics.failed_results !== undefined && metrics.total_urls !== undefined && metrics.total_urls > 0) { const failureRate = (metrics.failed_results / metrics.total_urls * 100).toFixed(1); failureRateElement.innerText = `${failureRate}%`; } // Update cost estimate const costElement = document.getElementById('estimatedCost'); if (costElement && metrics.total_tokens !== undefined) { const cost = ((metrics.total_tokens / 1000) * 0.02).toFixed(2); costElement.innerText = `$${cost}`; } } </script>
 {% endblock %}

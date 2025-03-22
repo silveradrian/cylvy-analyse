@@ -534,9 +534,9 @@ class ContentAnalyzer:
             }
     
     def process_url(self, url: str, prompt_names: List[str], 
-             company_info: Optional[Dict[str, Any]] = None,
-             content_type: str = "html", 
-             force_browser: bool = False) -> Dict[str, Any]:
+              company_info: Optional[Dict[str, Any]] = None,
+              content_type: str = "html", 
+              force_browser: bool = False) -> Dict[str, Any]:
         """
         Process a single URL by scraping content and analyzing it with selected prompts.
         
@@ -568,6 +568,15 @@ class ContentAnalyzer:
             # Calculate API tokens used
             api_tokens = raw_result.get("api_tokens", 0)
             
+            # Get the structured data from the analysis
+            structured_data = raw_result.get("structured_data", {})
+            
+            # Combine analysis results and structured data
+            combined_data = {
+                "analysis_results": raw_result.get("analysis_results", {}),
+                "structured_data": structured_data
+            }
+            
             # Format result to match database schema (results table)
             result = {
                 'url': url,
@@ -575,20 +584,29 @@ class ContentAnalyzer:
                 'title': raw_result.get('title', ''),
                 'content_type': raw_result.get('content_type', 'html'),
                 'word_count': raw_result.get('word_count', 0),
-                'processed_at': current_time,  # Use processed_at instead of created_at
-                'prompt_name': prompt_name,    # Use first prompt as primary prompt
+                'processed_at': current_time,
+                'prompt_name': prompt_name,
                 'api_tokens': api_tokens,
                 'error': raw_result.get('error', ''),
-                'data': json.dumps(raw_result.get('analysis_results', {}))
+                'data': json.dumps(combined_data)  # Save combined data with structured fields
             }
+            
+            # Also add the structured fields directly to the result for easy access in exports
+            if prompt_name in structured_data:
+                logger.info(f"Adding {len(structured_data[prompt_name])} structured fields to result")
+                for field_name, field_value in structured_data[prompt_name].items():
+                    result[field_name] = field_value
             
             # Log successful processing
             logger.info(f"Processed URL {url} with {len(prompt_names)} prompts - Status: {result['status']}")
             
             return result
-        
+            
         except Exception as e:
             logger.error(f"Error in process_url for {url}: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
             # Return error result that matches database schema
             return {
                 'url': url,
@@ -596,19 +614,29 @@ class ContentAnalyzer:
                 'title': '',
                 'content_type': content_type,
                 'word_count': 0,
-                'processed_at': time.time(),  # Current time
+                'processed_at': time.time(),
                 'prompt_name': prompt_names[0] if prompt_names else "",
                 'api_tokens': 0,
                 'error': str(e),
                 'data': '{}'
             }
         finally:
-            self.close_async_connections(loop)
-            loop.close()
-
-    def close_async_connections(loop=None):
+            # Properly close the loop and clean up resources
+            try:
+                self.close_async_connections(loop)
+            except Exception as e:
+                logger.warning(f"Error during async cleanup for {url}: {str(e)}")
+            
+            try:
+                loop.close()
+            except Exception as e:
+                logger.warning(f"Error closing event loop for {url}: {str(e)}")
+    
+            
+    def close_async_connections(self, loop=None):
         """Properly close async connections to prevent event loop errors."""
         import asyncio
+        import concurrent.futures
         
         try:
             # Get the current event loop if none is provided
