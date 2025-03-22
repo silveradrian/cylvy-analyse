@@ -717,121 +717,122 @@ class URLProcessor:
     Handles URL batch processing with URL-specific company context.
     """
     
-    def __init__(self, analyzer: ContentAnalyzer, db_manager: DatabaseManager):
+    def __init__(self, analyzer: ContentAnalyzer, db_manager):
         """Initialize the URL processor."""
         self.analyzer = analyzer
-        self.db = db_manager
+        self.db = db_manager  # Store as db, not db_manager
+        self.logger = logging.getLogger("app")
     
-    async def _process_urls_async(self, job_id: str, url_data_list: List[Dict[str, Any]], prompt_names: List[str]):
+    async def process_urls_async(self, job_id: str, url_data_list: List[Dict[str, Any]], 
+                             prompt_names: List[str], force_browser: bool = False, premium_proxy: bool = False):
         """
-        Process URLs asynchronously in batches with controlled concurrency.
+        Process URLs asynchronously with controlled concurrency.
         """
         total_urls = len(url_data_list)
         processed = 0
         errors = 0
         
-        # Determine optimal batch size and concurrency
-        batch_size = int(os.environ.get("BATCH_SIZE", "10"))
-        max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "5"))
+        # Determine concurrency from environment variable
+        max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "3"))
         
-        logger.info(f"Processing job {job_id} with {total_urls} URLs in batches of {batch_size} with max concurrency {max_concurrency}")
+        self.logger.info(f"Processing job {job_id} with {total_urls} URLs using concurrency {max_concurrency}")
         
-        # Split into batches
-        batches = [url_data_list[i:i + batch_size] for i in range(0, len(url_data_list), batch_size)]
+        # Update job status to running
+        self.db.update_job_status(  # Now using self.db instead of self.db_manager
+            job_id=job_id,
+            status="running",
+            total_urls=total_urls,
+            processed_urls=0,
+            error_count=0
+        )
         
-        # Semaphore to control concurrency
+        # Create semaphore to control concurrency
         semaphore = asyncio.Semaphore(max_concurrency)
-        
-        async def _process_urls_async(self, job_id: str, url_data_list: List[Dict[str, Any]], prompt_names: List[str]):
-            """
-            Process URLs asynchronously in batches with controlled concurrency.
-            """
-            total_urls = len(url_data_list)
-            processed = 0
-            errors = 0
-            
-            # Determine optimal batch size and concurrency
-            batch_size = int(os.environ.get("BATCH_SIZE", "10"))
-            max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "5"))
-            
-            logger.info(f"Processing job {job_id} with {total_urls} URLs in batches of {batch_size} with max concurrency {max_concurrency}")
-            
-            # Split into batches
-            batches = [url_data_list[i:i + batch_size] for i in range(0, len(url_data_list), batch_size)]
-            
-            # Semaphore to control concurrency
-            semaphore = asyncio.Semaphore(max_concurrency)
         
         async def process_url_with_semaphore(url_data):
             """Process a single URL with semaphore control"""
             async with semaphore:
-                url = url_data.get('url')
-                company_info = url_data.get('company_info')
-                content_type = url_data.get('content_type', 'html')
-                force_browser = url_data.get('force_browser', False)
+                url = url_data.get('url') if isinstance(url_data, dict) else url_data
+                company_info = url_data.get('company_info') if isinstance(url_data, dict) else None
+                content_type = url_data.get('content_type', 'html') if isinstance(url_data, dict) else 'html'
+                url_force_browser = url_data.get('force_browser', force_browser) if isinstance(url_data, dict) else force_browser
                 
                 try:
+                    self.logger.info(f"Processing URL: {url}")
                     result = await self.analyzer.process_url_async(
                         url=url,
                         prompt_names=prompt_names,
                         company_info=company_info,
                         content_type=content_type, 
-                        force_browser=force_browser
+                        force_browser=url_force_browser
                     )
+                    
+                    # Add job ID to result
                     result['job_id'] = job_id
                     return result
+                    
                 except Exception as e:
-                    logger.error(f"Error processing URL {url}: {str(e)}")
+                    self.logger.error(f"Error processing URL {url}: {str(e)}")
                     return {
                         "url": url,
                         "job_id": job_id,
                         "status": "error",
                         "error": str(e),
-                        "created_at": datetime.now().isoformat()
+                        "processed_at": time.time()
                     }
         
-        # Process each batch
-        for i, batch in enumerate(batches):
-            logger.info(f"Processing batch {i+1}/{len(batches)} for job {job_id}")
-            
-            # Create tasks for all URLs in the batch
-            tasks = [process_url_with_semaphore(url_data) for url_data in batch if url_data.get('url')]
-            
-            # Process the batch
-            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Save results and update counters
-            for result in batch_results:
-                if isinstance(result, Exception):
-                    logger.error(f"Exception in URL processing: {str(result)}")
-                    errors += 1
-                    continue
+        # Create tasks for all URLs
+        tasks = []
+        for url_data in url_data_list:
+            if isinstance(url_data, dict) and url_data.get('url'):
+                tasks.append(process_url_with_semaphore(url_data))
+            elif isinstance(url_data, str):
+                tasks.append(process_url_with_semaphore({'url': url_data}))
                 
+        # Process all URLs in parallel but limited by semaphore
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Process results
+        for result in results:
+            if isinstance(result, Exception):
+                self.logger.error(f"Exception processing URL: {str(result)}")
+                errors += 1
+                continue
+                
+            try:
                 # Save result to database
-                self.db.save_result(result)
+                self.db.save_result(result)  # Now using self.db instead of self.db_manager
                 
                 # Update counters
                 processed += 1
                 if result.get('status') != 'success':
                     errors += 1
-            
-            # Update job status after each batch
-            self.db.update_job_status(
-                job_id=job_id,
-                processed_urls=processed,
-                error_count=errors
-            )
-            
-            logger.info(f"Completed batch {i+1}/{len(batches)} for job {job_id} - {processed}/{total_urls} processed, {errors} errors")
+                
+                # Update job status for progress tracking
+                self.db.update_job_status(  # Now using self.db instead of self.db_manager
+                    job_id=job_id,
+                    processed_urls=processed,
+                    error_count=errors
+                )
+            except Exception as e:
+                self.logger.error(f"Error saving URL result: {str(e)}")
+                errors += 1
         
-        # Mark job as completed
-        final_status = "completed" if errors == 0 else "completed_with_errors"
-        self.db.update_job_status(
+        # Determine final job status
+        final_status = "completed"
+        if processed == 0:
+            final_status = "failed"
+        elif errors > 0:
+            final_status = "completed_with_errors"
+            
+        # Update job completion status
+        self.db.update_job_status(  # Now using self.db instead of self.db_manager
             job_id=job_id,
             status=final_status,
             processed_urls=processed,
             error_count=errors,
-            completed_at=datetime.now().isoformat()
+            completed_at=time.time()
         )
         
-        logger.info(f"Finished job {job_id}: {processed}/{total_urls} URLs processed, {errors} errors")
+        self.logger.info(f"Finished job {job_id}: {processed}/{total_urls} URLs processed, {errors} errors")
+        return processed, errors

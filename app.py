@@ -6,7 +6,6 @@ This is the main Flask application that provides a web interface
 for content analysis using OpenAI API and custom prompt configurations.
 """
 
-
 import pytz
 import asyncio
 import os
@@ -19,10 +18,12 @@ import pandas as pd
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template, redirect, url_for, send_file, Response, flash
+
 # Import our custom modules
 from db_manager import db
-from analyzer import ContentAnalyzer
+from analyzer import ContentAnalyzer, URLProcessor
 from prompt_loader import list_available_prompts, get_prompt_by_name, PromptLoader
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -148,6 +149,107 @@ def process_urls_in_background(job_id: str, urls: List[str], prompt_names: List[
         return False
     finally:
         # Remove the thread from active threads
+        if threading.current_thread().ident in active_threads:
+            active_threads.remove(threading.current_thread().ident)
+
+
+def process_urls_in_parallel(job_id: str, urls, prompt_names: List[str],
+                           force_browser: bool = False, premium_proxy: bool = False):
+    """Process URLs in parallel with controlled concurrency."""
+    try:
+        logger.info(f"Starting parallel processing for job {job_id} with {len(urls)} URLs")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # Initialize counters and update job status
+        total_urls = len(urls)
+        processed_count = error_count = 0
+        db.update_job_status(job_id=job_id, status="running", total_urls=total_urls)
+        
+        # Create analyzer instance
+        analyzer = ContentAnalyzer()
+        max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "3"))
+        
+        async def process_urls():
+            semaphore = asyncio.Semaphore(max_concurrency)
+            nonlocal processed_count, error_count
+            
+            async def process_with_limit(url_data):
+                async with semaphore:
+                    # Extract URL data
+                    url = url_data.get('url') if isinstance(url_data, dict) else url_data
+                    company_info = url_data.get('company_info') if isinstance(url_data, dict) else None
+                    content_type = url_data.get('content_type', 'html') if isinstance(url_data, dict) else 'html'
+                    url_force_browser = url_data.get('force_browser', force_browser) if isinstance(url_data, dict) else force_browser
+                    
+                    try:
+                        # Process URL
+                        result = await analyzer.process_url_async(
+                            url=url, prompt_names=prompt_names, company_info=company_info,
+                            content_type=content_type, force_browser=url_force_browser
+                        )
+                        result['job_id'] = job_id
+                        return result
+                    except Exception as e:
+                        logger.error(f"Error processing URL {url}: {str(e)}")
+                        return {
+                            "url": url, "job_id": job_id, "status": "error",
+                            "error": str(e), "processed_at": time.time()
+                        }
+            
+            # Create tasks for all URLs
+            tasks = [
+                process_with_limit({'url': url} if isinstance(url, str) else url)
+                for url in urls
+            ]
+            
+            # Process URLs in parallel with controlled concurrency
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Handle results
+            for result in results:
+                if isinstance(result, Exception):
+                    error_count += 1
+                    continue
+                
+                try:
+                    db.save_result(result)
+                    processed_count += 1
+                    if result.get('status') != 'success':
+                        error_count += 1
+                    db.update_job_status(
+                        job_id=job_id,
+                        processed_urls=processed_count,
+                        error_count=error_count
+                    )
+                except Exception as e:
+                    logger.error(f"Error saving result: {str(e)}")
+                    error_count += 1
+            
+            # Update final job status
+            final_status = "failed" if processed_count == 0 else (
+                "completed_with_errors" if error_count > 0 else "completed"
+            )
+            db.update_job_status(
+                job_id=job_id, status=final_status,
+                processed_urls=processed_count, error_count=error_count,
+                completed_at=time.time()
+            )
+            return processed_count, error_count
+        
+        # Execute the async function
+        processed, errors = loop.run_until_complete(process_urls())
+        logger.info(f"Job {job_id} complete: {processed}/{total_urls} URLs processed, {errors} errors")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error in processing job {job_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        db.update_job_status(job_id=job_id, status="failed", error_count=1)
+        return False
+    
+    finally:
+        loop.close()
         if threading.current_thread().ident in active_threads:
             active_threads.remove(threading.current_thread().ident)
 
@@ -302,15 +404,20 @@ def index():
             page_title="Error"
         )
 
+
+
+
 @app.route('/analyze', methods=['POST'])
 def analyze():
     """
-    Handle form submission for URL analysis.
+    Handle form submission for URL analysis with parallel processing.
     """
     try:
         # Get form data
         urls_input = request.form.get('urls', '').strip()
         prompt_names = request.form.getlist('prompts')
+        force_browser = 'force_browser' in request.form
+        premium_proxy = 'premium_proxy' in request.form
         
         # Initialize url_data_list
         url_data_list = []
@@ -350,6 +457,8 @@ def analyze():
         for data in url_data_list:
             if is_valid_url(data.get('url', '')):
                 valid_url_data_list.append(data)
+            else:
+                logger.warning(f"Invalid URL skipped: {data.get('url', '(empty)')}")
         
         if not valid_url_data_list:
             flash('No valid URLs provided.', 'danger')
@@ -359,22 +468,20 @@ def analyze():
             flash('Please select at least one prompt configuration.', 'warning')
             return redirect(url_for('index'))
         
-        # Get company info (if provided)
-        company_info = None  # You can extend this to get from a form field if needed
-        
-        # Create a new job
+        # Create a new job - only use parameters accepted by create_job()
         job_id = db.create_job(
             urls=[data.get('url') for data in valid_url_data_list],
             prompts=prompt_names
         )
         
-        # Extract URLs as strings for processing
-        url_strings = [data.get('url') for data in valid_url_data_list]
+        # We don't need to store these in the database separately since
+        # the URL data objects already contain this information
+        logger.info(f"Job {job_id} created with force_browser={force_browser}, premium_proxy={premium_proxy}")
         
-        # Start processing in a background thread
+        # Start processing in a background thread WITH PARALLEL PROCESSING
         thread = threading.Thread(
-            target=process_urls_in_background,
-            args=(job_id, url_strings, prompt_names, company_info)
+            target=process_urls_in_parallel,
+            args=(job_id, valid_url_data_list, prompt_names, force_browser, premium_proxy)
         )
         thread.daemon = True
         thread.start()
@@ -493,6 +600,8 @@ def parse_csv_file(file):
     
     logger.info(f"Parsed {row_count} rows from CSV with BOM-aware parsing, found {len(url_data_list)} URLs")
     return url_data_list
+
+
 
 
 def get_status_description(status):

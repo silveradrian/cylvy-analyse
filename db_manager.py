@@ -50,6 +50,7 @@ class DatabaseManager:
             
         self.db_path = db_path
         self._init_db()
+        self.db = self  # Add self-reference to fix '.db' attribute access errors
         logger.info(f"Database initialized at {db_path}")
     
     def get_connection(self):
@@ -121,59 +122,40 @@ class DatabaseManager:
         conn.commit()
         conn.close()
     
-    def create_job(self, urls: List[str], prompts: List[str], name: str = None, company_info: Dict = None) -> str:
+    def create_job(self, urls: List[str], prompts: List[str], 
+               force_browser: bool = False, premium_proxy: bool = False) -> str:
         """
         Create a new job in the database.
         
         Args:
-            urls: List of URLs to analyze
+            urls: List of URLs to process
             prompts: List of prompt names to use
-            name: Optional job name
-            company_info: Optional company information dictionary
+            force_browser: Whether to force browser rendering
+            premium_proxy: Whether to use premium proxy
             
         Returns:
-            The job ID
+            Job ID string
         """
         job_id = str(uuid.uuid4())
-        current_time = time.time()  # Use timestamp for REAL columns
         
-        if name is None:
-            name = f"Job {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            
-        if company_info is None:
-            company_info = {}
+        job_data = {
+            'job_id': job_id,
+            'urls': urls,
+            'prompts': prompts,
+            'status': 'pending',
+            'created_at': datetime.now().isoformat(),
+            'total_urls': len(urls),
+            'processed_urls': 0,
+            'force_browser': force_browser,
+            'premium_proxy': premium_proxy
+        }
         
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        # Store the job in the database
+        self.db.jobs[job_id] = job_data
+        self.write_data()
         
-        cursor.execute(
-            '''
-            INSERT INTO jobs (
-                job_id, name, status, created_at, updated_at, 
-                total_urls, processed_urls, error_count, prompt_names, company_info
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
-            (
-                job_id,
-                name,
-                'pending',
-                current_time,
-                current_time,
-                len(urls),
-                0,
-                0,
-                json.dumps(prompts),
-                json.dumps(company_info)
-            )
-        )
-        
-        conn.commit()
-        conn.close()
-        
-        logger.info(f"Created new job with ID: {job_id}")
         return job_id
-    
+
     def update_job_status(self, job_id, status=None, total_urls=None, processed_urls=None, error_count=None, error=None, completed_at=None):
         """
         Update job status and other fields.
@@ -372,6 +354,46 @@ class DatabaseManager:
             logger.error(f"Database error in get_job: {e}")
             return None
     
+
+    def get_results(self, job_id, limit=100, offset=0):
+        """
+        Get results for a job with pagination.
+        
+        Args:
+            job_id: The job ID
+            limit: Maximum number of results
+            offset: Number of results to skip
+            
+        Returns:
+            List of result dictionaries
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT * FROM results WHERE job_id = ? ORDER BY processed_at DESC LIMIT ? OFFSET ?", 
+            (job_id, int(limit), int(offset))
+        )
+        
+        rows = cursor.fetchall()
+        
+        # Convert rows to dicts and parse JSON fields
+        results = []
+        for row in rows:
+            result = dict(row)
+            # Parse data JSON if present
+            if 'data' in result and result['data']:
+                try:
+                    result['data'] = json.loads(result['data'])
+                except json.JSONDecodeError:
+                    pass
+            results.append(result)
+        
+        conn.close()
+        return results
+
+
     def get_results_for_job(self, job_id: str) -> List[Dict[str, Any]]:
         """
         Get all results for a specific job.
