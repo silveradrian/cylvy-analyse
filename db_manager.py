@@ -126,64 +126,64 @@ class DatabaseManager:
         conn.commit()
         conn.close()
     
-    def create_job(self, job_id: str = None, name: str = "", prompt_names: List[str] = None, 
-              company_info: Dict[str, Any] = None, urls: List[str] = None, 
-              prompts: List[str] = None) -> str:
+    def create_job(self, urls: List[str], prompts: List[str], name: str = None, company_info: Dict = None) -> str:
         """
-        Create a new analysis job record.
+        Create a new job in the database.
         
         Args:
-            job_id: Unique identifier for the job (generated if not provided)
-            name: Optional name for the job
-            prompt_names: List of prompt names being used
-            company_info: Optional company context information
-            urls: List of URLs to analyze (backward compatibility)
-            prompts: List of prompt names (backward compatibility)
-            
+            urls: List of URLs to analyze
+            prompts: List of prompt names to use
+            name: Optional job name
+            company_info: Optional company information dictionary
+                
         Returns:
             The job ID
         """
         try:
-            # For backward compatibility
-            if job_id is None:
-                job_id = str(uuid.uuid4())
-                
-            # Handle old parameter names
-            if prompt_names is None and prompts is not None:
-                prompt_names = prompts
-                
-            # Convert lists and dicts to JSON strings
-            prompt_names_json = json.dumps(prompt_names or [])
-            company_info_json = json.dumps(company_info or {})
-            
-            # Set total_urls if 'urls' parameter is provided
-            total_urls = len(urls) if urls is not None else 0
-            
+            import uuid as uuid_module  # Import locally to avoid namespace issues
+            job_id = str(uuid_module.uuid4())
             current_time = time.time()
+            
+            if name is None:
+                name = f"Analysis {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                
+            if company_info is None:
+                company_info = {}
             
             conn = self.get_connection()
             cursor = conn.cursor()
             
-            cursor.execute('''
-            INSERT INTO jobs (
-                job_id, name, status, created_at, updated_at, 
-                total_urls, processed_urls, error_count, 
-                prompt_names, company_info
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                job_id, name, 'pending', current_time, current_time,
-                total_urls, 0, 0, prompt_names_json, company_info_json
-            ))
+            cursor.execute(
+                '''
+                INSERT INTO jobs (
+                    job_id, name, status, created_at, updated_at, 
+                    total_urls, processed_urls, error_count, prompt_names, company_info
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    job_id,
+                    name,
+                    'pending',
+                    current_time,
+                    current_time,
+                    len(urls),
+                    0,
+                    0,
+                    json.dumps(prompts),
+                    json.dumps(company_info)
+                )
+            )
             
             conn.commit()
             conn.close()
             
             logger.info(f"Created new job with ID: {job_id}")
             return job_id
-                
+            
         except Exception as e:
-            logger.error(f"Error creating job {job_id}: {str(e)}")
-            return job_id
+            logger.error(f"Error creating job {name}: {str(e)}")
+            return None
 
     # Still return job_id for backward compatibility
     
@@ -268,6 +268,7 @@ class DatabaseManager:
             logger.error(f"Error updating job {job_id} status: {str(e)}")
             return False
     
+
     def save_result(self, result):
         """
         Save an analysis result to the database.
@@ -293,55 +294,93 @@ class DatabaseManager:
             error = result.get('error', '')
             prompt_name = result.get('prompt_name', '')
             
-            # CRITICAL FIX: Prepare data object with analysis results and structured data
+            # Log basic info about the result being saved
+            logger.info(f"Saving result for URL: {url}, job_id: {job_id}")
+            
+            # Initialize data object to store all structured data
             data_obj = {}
             
-            # Include analysis_results if present
-            if 'analysis_results' in result:
+            # 1. Include analysis_results if present
+            if 'analysis_results' in result and result['analysis_results']:
                 data_obj['analysis_results'] = result['analysis_results']
-                logger.info(f"Including analysis_results with {len(result['analysis_results'])} prompts")
+                analysis_keys = list(result['analysis_results'].keys())
+                logger.info(f"Including analysis_results with {len(analysis_keys)} prompts: {analysis_keys}")
             
-            # Include structured_data if present
-            if 'structured_data' in result:
+            # 2. Include structured_data if present
+            if 'structured_data' in result and result['structured_data']:
                 data_obj['structured_data'] = result['structured_data']
-                total_fields = sum(len(fields) for prompt, fields in result['structured_data'].items())
-                logger.info(f"Including structured_data with {total_fields} total fields")
+                # Calculate total fields across all prompts
+                total_fields = sum(
+                    len(fields) for prompt, fields in result['structured_data'].items()
+                    if isinstance(fields, dict)
+                )
+                prompt_counts = {
+                    prompt: len(fields) for prompt, fields in result['structured_data'].items()
+                    if isinstance(fields, dict)
+                }
+                logger.info(f"Including structured_data with {total_fields} total fields across prompts: {prompt_counts}")
             
-            # If data is already a serialized string, try to parse and enhance it
-            elif 'data' in result and isinstance(result['data'], str) and result['data'] not in ('{}', ''):
-                try:
-                    existing_data = json.loads(result['data']) 
-                    if isinstance(existing_data, dict):
-                        data_obj = existing_data
-                        logger.info(f"Using existing data with keys: {list(existing_data.keys())}")
-                except json.JSONDecodeError:
-                    logger.warning(f"Could not parse existing data JSON: {result['data'][:100]}")
+            # 3. If data is already a serialized string, parse and incorporate it
+            if 'data' in result and result['data']:
+                # Handle string JSON data
+                if isinstance(result['data'], str) and result['data'].strip() not in ('{}', ''):
+                    try:
+                        existing_data = json.loads(result['data']) 
+                        if isinstance(existing_data, dict):
+                            # Merge with our data object, preferring any data we've already collected
+                            for key, value in existing_data.items():
+                                if key not in data_obj:
+                                    data_obj[key] = value
+                                elif key == 'structured_data' and isinstance(value, dict):
+                                    # For structured_data, merge at the prompt level
+                                    for prompt, fields in value.items():
+                                        if prompt not in data_obj['structured_data']:
+                                            data_obj['structured_data'][prompt] = fields
+                            logger.info(f"Merged existing data with keys: {list(existing_data.keys())}")
+                    except json.JSONDecodeError:
+                        logger.warning(f"Could not parse existing data JSON: {result['data'][:100]}...")
+                # Handle dictionary data
+                elif isinstance(result['data'], dict):
+                    # Similar merge logic for dict data
+                    for key, value in result['data'].items():
+                        if key not in data_obj:
+                            data_obj[key] = value
+                        elif key == 'structured_data' and isinstance(value, dict):
+                            if 'structured_data' not in data_obj:
+                                data_obj['structured_data'] = {}
+                            for prompt, fields in value.items():
+                                if prompt not in data_obj['structured_data']:
+                                    data_obj['structured_data'][prompt] = fields
+                    logger.info(f"Merged data dict with keys: {list(result['data'].keys())}")
             
-            # If we have structured fields directly in the result, add them too
+            # 4. Extract direct structured fields from the result
             structured_fields = {}
             for key, value in result.items():
-                if key.startswith(('ci_', 'pa_', 'ca_')) or ('_' in key and key not in ('job_id', 'api_tokens', 'word_count')):
+                # Identify fields that look like structured data (prefixed or containing underscore)
+                if (key.startswith(('ci_', 'pa_', 'ca_')) or 
+                    ('_' in key and key not in ('job_id', 'api_tokens', 'word_count', 'content_type'))):
                     structured_fields[key] = value
             
             # If we found direct structured fields, include them
             if structured_fields:
+                # Ensure structured_data container exists
                 if 'structured_data' not in data_obj:
                     data_obj['structured_data'] = {}
                 
-                # Use the first prompt name or a default
+                # Use the prompt name if available, or default
                 target_prompt = prompt_name or 'content_analysis'
                 if target_prompt not in data_obj['structured_data']:
                     data_obj['structured_data'][target_prompt] = {}
                 
                 # Add all structured fields
                 data_obj['structured_data'][target_prompt].update(structured_fields)
-                logger.info(f"Added {len(structured_fields)} direct structured fields to data_obj")
+                logger.info(f"Added {len(structured_fields)} direct structured fields to target prompt '{target_prompt}'")
 
             # Convert the final data object to JSON
             data_json = json.dumps(data_obj)
             
-            # Debug log the size of the data we're storing
-            logger.info(f"Saving result for {url} with data JSON size: {len(data_json)} chars")
+            # Log data size and structure
+            logger.info(f"Final data JSON size: {len(data_json)} chars, top-level keys: {list(data_obj.keys())}")
             
             # Use processed_at instead of created_at for the timestamp
             processed_at = result.get('processed_at', time.time())
@@ -360,6 +399,7 @@ class DatabaseManager:
             )
             
             result_id = cursor.lastrowid
+            logger.info(f"Saved result to database with ID: {result_id}")
             
             # If there are API tokens used, also log in prompt_usage table
             if api_tokens > 0 and prompt_name:
@@ -373,6 +413,7 @@ class DatabaseManager:
                         """,
                         (prompt_name, job_id, url, api_tokens, processed_at, status == 'success')
                     )
+                    logger.info(f"Logged token usage: {api_tokens} tokens for prompt '{prompt_name}'")
                 except Exception as e:
                     logger.warning(f"Failed to insert prompt usage: {e}")
             
@@ -388,7 +429,8 @@ class DatabaseManager:
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             return None
-    
+
+
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         """
         Get job details by ID.
@@ -544,63 +586,113 @@ class DatabaseManager:
     
     def get_all_jobs(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         """
-        Get all jobs with pagination.
+        Retrieve all jobs with pagination, ordered by creation date (most recent first).
         
         Args:
             limit: Maximum number of jobs to return
-            offset: Starting offset for pagination
-            
+            offset: Number of jobs to skip
+                
         Returns:
             List of job dictionaries
         """
         try:
+            # Ensure limit and offset are integers
+            try:
+                limit = int(limit) if limit is not None else 100
+                offset = int(offset) if offset is not None else 0
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid parameters: limit={limit}, offset={offset}. Using defaults.")
+                limit = 100
+                offset = 0
+                
+            # Ensure values are positive
+            limit = max(1, limit)
+            offset = max(0, offset)
+            
             conn = self.get_connection()
             cursor = conn.cursor()
             
-            cursor.execute('''
-            SELECT * FROM jobs 
-            ORDER BY created_at DESC
-            LIMIT ? OFFSET ?
-            ''', (limit, offset))
+            # Use parameterized query with explicit integer values
+            cursor.execute(
+                """
+                SELECT job_id, name, status, created_at, updated_at, completed_at, 
+                       total_urls, processed_urls, error_count, prompt_names, company_info
+                FROM jobs
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+                """, 
+                (int(limit), int(offset))  # Explicit casting to integers
+            )
             
+            rows = cursor.fetchall()
+            cols = [col[0] for col in cursor.description]
             jobs = []
             
-            for row in cursor.fetchall():
-                job = dict(row)
+            for row in rows:
+                # Create dictionary from row data
+                job_data = dict(zip(cols, row))
                 
-                # Parse JSON fields
-                if 'prompt_names' in job and job['prompt_names']:
-                    job['prompt_names'] = json.loads(job['prompt_names'])
-                else:
-                    job['prompt_names'] = []
+                # Parse JSON fields safely
+                try:
+                    prompt_names = json.loads(job_data['prompt_names']) if job_data['prompt_names'] else []
+                except (TypeError, json.JSONDecodeError):
+                    prompt_names = []
                     
-                if 'company_info' in job and job['company_info']:
-                    job['company_info'] = json.loads(job['company_info'])
-                else:
-                    job['company_info'] = {}
+                try:
+                    company_info = json.loads(job_data['company_info']) if job_data['company_info'] else {}
+                except (TypeError, json.JSONDecodeError):
+                    company_info = {}
+                
+                # Format timestamps safely
+                try:
+                    created_at = datetime.fromtimestamp(job_data['created_at']).isoformat() if job_data['created_at'] else None
+                except (TypeError, ValueError):
+                    created_at = None
+                    
+                try:
+                    updated_at = datetime.fromtimestamp(job_data['updated_at']).isoformat() if job_data['updated_at'] else None
+                except (TypeError, ValueError):
+                    updated_at = None
+                    
+                try:
+                    completed_at = datetime.fromtimestamp(job_data['completed_at']).isoformat() if job_data['completed_at'] else None
+                except (TypeError, ValueError):
+                    completed_at = None
+                
+                # Create formatted job object
+                job = {
+                    "job_id": job_data['job_id'],
+                    "name": job_data['name'] or "",
+                    "status": job_data['status'] or "unknown",
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                    "completed_at": completed_at,
+                    "total_urls": job_data['total_urls'] or 0,
+                    "processed_urls": job_data['processed_urls'] or 0,
+                    "error_count": job_data['error_count'] or 0,
+                    "prompts": prompt_names,
+                    "prompt_count": len(prompt_names),
+                    "company_info": company_info,
+                    "progress_percentage": 0
+                }
                 
                 # Calculate progress percentage
-                total = job.get('total_urls', 0)
-                processed = job.get('processed_urls', 0)
+                if job["total_urls"] > 0:
+                    job["progress_percentage"] = int((job["processed_urls"] / job["total_urls"]) * 100)
                 
-                if total > 0:
-                    job['progress'] = (processed / total) * 100
-                else:
-                    job['progress'] = 0
-                
-                # Add formatted timestamps
-                for ts_field in ['created_at', 'updated_at', 'completed_at']:
-                    if job.get(ts_field):
-                        job[f"{ts_field}_formatted"] = datetime.fromtimestamp(
-                            job[ts_field]).strftime('%Y-%m-%d %H:%M:%S')
+                # For backward compatibility
+                job["url_count"] = job["total_urls"]
                 
                 jobs.append(job)
             
             conn.close()
             return jobs
-            
+                
+        except sqlite3.Error as e:
+            logger.error(f"Database error in get_all_jobs: {e}")
+            return []
         except Exception as e:
-            logger.error(f"Error getting all jobs: {str(e)}")
+            logger.error(f"Unexpected error in get_all_jobs: {str(e)}")
             return []
     
     def get_job_metrics(self, job_id: str) -> Dict[str, Any]:

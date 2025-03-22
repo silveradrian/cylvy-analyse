@@ -232,87 +232,64 @@ def process_urls_in_parallel(job_id: str, url_data_list: List[Dict[str, Any]],
 
 
 
-def process_urls_in_background(job_id: str, urls: List[str], prompt_names: List[str], 
-                            company_info: Optional[Dict[str, Any]] = None):
+def process_urls_in_background(job_id, url_data_list, prompt_names, company_info=None):
     """
-    Process a list of URLs in the background.
+    Process URLs in background thread.
     """
     try:
-        logger.info(f"Starting background processing for job {job_id} with {len(urls)} URLs")
+        logger.info(f"Starting background processing for job {job_id} with {len(url_data_list)} URLs")
         
-        # Fix 1: Use get_running_loop or create a new one properly
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+        # Verify job_id is present
+        if not job_id:
+            logger.error("Missing job_id in background processing")
+            return False
         
-        # Fix 2: Initialize error_count at the start
-        error_count = 0
+        # Initialize counters
         processed_count = 0
-        
-        # Update job status to running
-        db.update_job_status(
-            job_id=job_id,
-            status="running",
-            total_urls=len(urls),
-            processed_urls=0,
-            error_count=0
-        )
+        error_count = 0
         
         # Process each URL
-        for url in urls:
+        analyzer = ContentAnalyzer()
+        
+        for url_data in url_data_list:
             try:
-                # Check if the job has been cancelled
-                job = db.get_job(job_id)
-                if job and job.get('status') == 'cancelled':
-                    logger.info(f"Job {job_id} was cancelled - stopping processing")
-                    break
+                # Get URL from data
+                url = url_data.get('url') if isinstance(url_data, dict) else url_data
                 
-                # Process the URL - handle URLs as strings or dicts
-                url_string = url if isinstance(url, str) else url.get('url')
+                # Process URL
+                result = analyzer.process_url(
+                    url=url,
+                    prompt_names=prompt_names,
+                    company_info=company_info
+                )
                 
-                # Process the URL
-                result = analyzer.process_url(url_string, prompt_names, company_info)
-                
-                # Fix 3: Ensure result has job_id for database storage
+                # CRITICAL FIX: Ensure job_id is set
                 result['job_id'] = job_id
                 
-                # Save the result
-                db.save_result(result)  # Updated to match your current db_manager API
+                # Save result
+                db.save_result(result)
                 
                 # Update counters
                 processed_count += 1
-                if result.get('status') in ['error', 'scrape_error', 'analysis_error']:
+                if result.get('status') != 'success':
                     error_count += 1
                 
                 # Update job status
                 db.update_job_status(
                     job_id=job_id,
-                    status="running",
                     processed_urls=processed_count,
                     error_count=error_count
                 )
                 
-                logger.info(f"Processed URL {processed_count}/{len(urls)} for job {job_id}")
+                logger.info(f"Processed URL {processed_count}/{len(url_data_list)} for job {job_id}")
                 
             except Exception as e:
-                logger.error(f"Error processing URL {url} for job {job_id}: {str(e)}")
+                logger.error(f"Error processing URL: {str(e)}")
                 error_count += 1
-                
-                # Update job status
-                db.update_job_status(
-                    job_id=job_id,
-                    status="running",
-                    processed_urls=processed_count,
-                    error_count=error_count
-                )
         
-        # Mark the job as completed
+        # Update job status to completed
         final_status = "completed"
-        if processed_count == 0:
-            final_status = "failed"
-        elif error_count > 0:
+        if error_count > 0:
             final_status = "completed_with_errors"
         
         db.update_job_status(
@@ -320,24 +297,26 @@ def process_urls_in_background(job_id: str, urls: List[str], prompt_names: List[
             status=final_status,
             processed_urls=processed_count,
             error_count=error_count,
-            completed_at=datetime.now().isoformat()
+            completed_at=time.time()
         )
         
         logger.info(f"Completed background processing for job {job_id} - status: {final_status}")
-        return True
         
     except Exception as e:
-        logger.error(f"Error in background processing for job {job_id}: {str(e)}")
+        logger.error(f"Error in background processing: {str(e)}")
         
-        # Mark the job as failed - fix: use local error_count or default to 1
-        db.update_job_status(
-            job_id=job_id,
-            status="failed",
-            error_count=error_count if 'error_count' in locals() else 1
-        )
-        return False
+        # Update job status to failed
+        try:
+            db.update_job_status(
+                job_id=job_id,
+                status="failed",
+                error_count=1
+            )
+        except:
+            pass
+        
     finally:
-        # Remove the thread from active threads
+        # Remove thread from active threads
         if threading.current_thread().ident in active_threads:
             active_threads.remove(threading.current_thread().ident)
 
@@ -498,21 +477,32 @@ def analyze():
             return redirect(url_for('index'))
         
         # Get company info (if provided)
-        company_info = None  # You can extend this to get from a form field if needed
+        company_info = request.form.get('company_info', None)
+        if company_info:
+            try:
+                company_info = json.loads(company_info)
+            except:
+                company_info = None
         
         # Create a new job
         job_id = db.create_job(
             urls=[data.get('url') for data in valid_url_data_list],
-            prompts=prompt_names
+            prompts=prompt_names,
+            name=f"Analysis {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         )
         
-        # Extract URLs as strings for processing
-        url_strings = [data.get('url') for data in valid_url_data_list]
+        # CRITICAL FIX: Verify job_id was created properly
+        if not job_id:
+            logger.error("Failed to create job - no job_id returned")
+            flash("Failed to create analysis job", 'danger')
+            return redirect(url_for('index'))
+        
+        logger.info(f"Created job with ID: {job_id}")
         
         # Start processing in a background thread
         thread = threading.Thread(
             target=process_urls_in_background,
-            args=(job_id, url_strings, prompt_names, company_info)
+            args=(job_id, valid_url_data_list, prompt_names, company_info)
         )
         thread.daemon = True
         thread.start()
@@ -520,48 +510,122 @@ def analyze():
         # Add thread ID to active threads
         active_threads.add(thread.ident)
         
-        # Redirect to job status page
+        # Redirect to job status page with job_id
         return redirect(url_for('job_status', job_id=job_id))
             
     except Exception as e:
         logger.error(f"Error starting analysis: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         flash(f"Error: {str(e)}", 'danger')
         return redirect(url_for('index'))
-
 
 def parse_csv_file(file):
     """Parse a CSV file for URLs with company context."""
     import csv
     from io import StringIO
+    import re
+    import logging
+    
+    logger = logging.getLogger("app")
     
     url_data_list = []
-    content = file.read().decode('utf-8')
+    content = file.read().decode('utf-8-sig')  # Use utf-8-sig to handle BOM character
+    
+    # Log the first few characters to check for BOM
+    logger.info(f"CSV first 20 chars: {repr(content[:20])}")
+    
+    # Get reader
     reader = csv.DictReader(StringIO(content))
     
+    # Find the URL column - handle BOM character
+    url_column = None
+    for header in reader.fieldnames or []:
+        if header is None:
+            continue
+        if header.strip('\ufeff').lower() == 'url':  # Strip BOM character and case-insensitive
+            url_column = header
+            break
+    
+    if not url_column:
+        logger.error(f"No URL column found in CSV. Headers: {reader.fieldnames}")
+        return []
+    
+    # Reset reader
+    reader = csv.DictReader(StringIO(content))
+    
+    # Process rows
+    row_count = 0
     for row in reader:
-        if 'url' in row:
-            url_data = {'url': row['url']}
+        row_count += 1
+        
+        # Get URL using the correct column name (with or without BOM)
+        if url_column in row and row[url_column] and row[url_column].strip():
+            url = row[url_column].strip()
+            
+            # Create URL data with basic fields
+            url_data = {'url': url}
             
             # Extract company info if available
             company_info = {}
-            for key in ['company_name', 'company_description', 'industry', 'revenue']:
-                if key in row and row[key]:
-                    # Convert keys to match expected format
-                    company_key = key.replace('company_', '')
-                    company_info[company_key] = row[key]
+            
+            # Map CSV fields to expected fields, handling potential BOM
+            field_pairs = [
+                ('company_name', 'name'),
+                ('company_description', 'description'),
+                ('company_industry', 'industry'), 
+                ('company_revenue', 'revenue')
+            ]
+            
+            for csv_field, internal_field in field_pairs:
+                # Look for the field name with potential BOM
+                actual_field = None
+                for header in row.keys():
+                    if header and header.strip('\ufeff').lower() == csv_field.lower():
+                        actual_field = header
+                        break
+                
+                if actual_field and row[actual_field]:
+                    company_info[internal_field] = row[actual_field]
+            
+            # Handle industry field that may be in list format as string
+            if 'industry' in company_info and isinstance(company_info['industry'], str):
+                if company_info['industry'].startswith('[') and company_info['industry'].endswith(']'):
+                    try:
+                        # Extract from list format string
+                        industry_str = company_info['industry'][1:-1]
+                        industries = re.findall(r"'([^']*)'|\"([^\"]*)\"", industry_str)
+                        company_info['industry'] = [i[0] or i[1] for i in industries if i[0] or i[1]]
+                    except Exception as e:
+                        logger.warning(f"Error parsing industry list: {str(e)}")
             
             # Add company info if any fields were found
             if company_info:
                 url_data['company_info'] = company_info
             
-            # Add content type and rendering options if available
-            if 'content_type' in row:
-                url_data['content_type'] = row['content_type']
-            if 'force_browser' in row:
-                url_data['force_browser'] = row['force_browser'].lower() in ('true', 'yes', '1')
+            # Add content type if available
+            content_type_col = None
+            for header in row.keys():
+                if header and header.strip('\ufeff').lower() == 'content_type':
+                    content_type_col = header
+                    break
+                    
+            if content_type_col and row[content_type_col]:
+                url_data['content_type'] = row[content_type_col]
+            
+            # Add browser flag if available
+            force_browser_col = None
+            for header in row.keys():
+                if header and header.strip('\ufeff').lower() == 'force_browser':
+                    force_browser_col = header
+                    break
+                    
+            if force_browser_col:
+                url_data['force_browser'] = str(row[force_browser_col]).lower() in ('true', 'yes', '1')
             
             url_data_list.append(url_data)
     
+    logger.info(f"Parsed {row_count} rows from CSV with BOM-aware parsing, found {len(url_data_list)} URLs")
     return url_data_list
 
 
