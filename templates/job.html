@@ -3,481 +3,494 @@
 {% block title %}Job Status - {{ job.job_id }}{% endblock %}
 
 {% block content %}
-<div class="col-md-12">
-    <nav aria-label="breadcrumb">
-        <ol class="breadcrumb">
-            <li class="breadcrumb-item"><a href="{{ url_for('index') }}">Home</a></li>
-            <li class="breadcrumb-item"><a href="{{ url_for('list_jobs') }}">Jobs</a></li>
-            <li class="breadcrumb-item active">Job {{ job.job_id }}</li>
-        </ol>
-    </nav>
 
-    <div class="card shadow-sm mb-4">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            <h5 class="mb-0">
-                <i class="bi bi-file-earmark-text me-2"></i>
-                Job Status
-                {% if job.status == 'completed' %}
-                    <span class="badge bg-success">Completed</span>
-                {% elif job.status == 'running' %}
-                    <span class="badge bg-primary">Running</span>
-                {% elif job.status == 'failed' %}
-                    <span class="badge bg-danger">Failed</span>
-                {% elif job.status == 'cancelled' %}
-                    <span class="badge bg-secondary">Cancelled</span>
-                {% elif job.status == 'completed_with_errors' %}
-                    <span class="badge bg-warning text-dark">Completed with Errors</span>
-                {% else %}
-                    <span class="badge bg-secondary">{{ job.status }}</span>
-                {% endif %}
-            </h5>
-            <div>
-                {% if job.status != 'running' %}
-                    <div class="btn-group">
-                        <a href="{{ url_for('export_job', job_id=job.job_id, format='csv') }}" class="btn btn-outline-success btn-sm" title="Download all results as CSV">
-    <i class="bi bi-file-earmark-spreadsheet"></i> Export CSV
-</a>
-<a href="{{ url_for('export_job', job_id=job.job_id, format='excel') }}" class="btn btn-outline-success btn-sm" title="Download all results as Excel">
-    <i class="bi bi-file-earmark-excel"></i> Export Excel
-</a>
-                        {% if job.status != 'completed' and job.status != 'cancelled' %}
-                            <form method="post" action="{{ url_for('delete_job', job_id=job.job_id) }}" class="d-inline" onsubmit="return confirm('Are you sure you want to delete this job?');">
-                                <button type="submit" class="btn btn-outline-danger btn-sm">
-                                    <i class="bi bi-trash"></i> Delete Job
-                                </button>
-                            </form>
-                        {% endif %}
-                    </div>
-                {% else %}
-                    <form method="post" action="{{ url_for('cancel_job', job_id=job.job_id) }}" class="d-inline" onsubmit="return confirm('Are you sure you want to cancel this job?');">
-                        <button type="submit" class="btn btn-warning btn-sm">
-                            <i class="bi bi-x-circle"></i> Cancel Job
-                        </button>
-                    </form>
-                {% endif %}
-            </div>
-        </div>
-        <div class="card-body">
-            <div class="row">
-                <!-- Job details column -->
-                <div class="col-md-4">
-                    <h5 class="border-bottom pb-2">Job Details</h5>
-                    <table class="table table-sm">
-                        <tr>
-                            <th>Job ID:</th>
-                            <td><code>{{ job.job_id }}</code></td>
-                        </tr>
-                        <tr>
-                            <th>Created:</th>
-                            <td>{{ job.created_at|format_date }}</td>
-                        </tr>
-                        <tr>
-                            <th>Status:</th>
-                            <td>
-                                {% if job.status == 'completed' %}
-                                    <span class="badge bg-success">Completed</span>
-                                {% elif job.status == 'running' %}
-                                    <span class="badge bg-primary">Running</span>
-                                {% elif job.status == 'failed' %}
-                                    <span class="badge bg-danger">Failed</span>
-                                {% elif job.status == 'cancelled' %}
-                                    <span class="badge bg-secondary">Cancelled</span>
-                                {% elif job.status == 'completed_with_errors' %}
-                                    <span class="badge bg-warning text-dark">Completed with Errors</span>
-                                {% else %}
-                                    <span class="badge bg-secondary">{{ job.status }}</span>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        <tr>
-                            <th>Progress:</th>
-                            <td>
-                                <div class="progress">
-                                    <div class="progress-bar 
-                                        {% if job.status == 'completed' %}bg-success
-                                        {% elif job.status == 'failed' %}bg-danger
-                                        {% elif job.status == 'completed_with_errors' %}bg-warning{% endif %}"
-                                        role="progressbar" 
-                                        style="width: {{ (job.processed_urls / job.total_urls * 100) if job.total_urls else 0 }}%;"
-                                        aria-valuenow="{{ (job.processed_urls / job.total_urls * 100) if job.total_urls else 0 }}" 
-                                        aria-valuemin="0" aria-valuemax="100">
-                                        {{ ((job.processed_urls / job.total_urls * 100) if job.total_urls else 0)|int }}%
-                                    </div>
-                                </div>
-                            </td>
-                        </tr>
-                        <tr>
-                            <th>Completed:</th>
-                            <td>{{ job.completed_at|format_date if job.completed_at else 'In progress' }}</td>
-                        </tr>
-                        <tr>
-                            <th>Total URLs:</th>
-                            <td>{{ job.total_urls }}</td>
-                        </tr>
-                        <tr>
-                            <th>Processed:</th>
-                            <td>{{ job.processed_urls }}/{{ job.total_urls }}</td>
-                        </tr>
-                        <tr>
-                            <th>Success:</th>
-                            <td>{{ metrics.successful_results|default(0) }}</td>
-                        </tr>
-                        <tr>
-                            <th>Errors:</th>
-                            <td>{{ metrics.failed_results|default(0) }}</td>
-                        </tr>
-                    </table>
+<!-- Hidden input for job ID --> <input type="hidden" id="jobId" value="{{ job.job_id }}"> <div class="col-md-12"> <nav aria-label="breadcrumb"> <ol class="breadcrumb"> <li class="breadcrumb-item"><a href="{{ url_for('index') }}">Home</a></li> <li class="breadcrumb-item"><a href="{{ url_for('list_jobs') }}">Jobs</a></li> <li class="breadcrumb-item active">Job {{ job.job_id }}</li> </ol> </nav>
 
-                    <h5 class="border-bottom pb-2 mt-4">Prompts Used</h5>
-                    <ul class="list-group">
-                        {% for prompt in job.prompts %}
-                            <li class="list-group-item d-flex justify-content-between align-items-center">
-                                {{ prompt }}
-                                <a href="{{ url_for('view_prompt', name=prompt) }}" class="btn btn-sm btn-outline-primary">
-                                    <i class="bi bi-eye"></i> View
-                                </a>
-                            </li>
-                        {% else %}
-                            <li class="list-group-item text-muted">No prompts specified</li>
-                        {% endfor %}
-                    </ul>
-                </div>
-
-                <!-- Metrics and charts column -->
-                <div class="col-md-8">
-                    <h5 class="border-bottom pb-2">Analysis Results</h5>
-
-                    <!-- Metrics overview -->
-                    <div class="row mb-4">
-                        <div class="col-md-6">
-                            <div class="card bg-light">
-                                <div class="card-body">
-                                    <h6 class="card-title text-muted mb-3">Processing Stats</h6>
-                                    <div class="d-flex justify-content-between mb-2">
-                                        <span>Total Words:</span>
-                                        <strong>{{ metrics.total_words|default(0) }}</strong>
-                                    </div>
-                                    <div class="d-flex justify-content-between mb-2">
-                                        <span>Successful URLs:</span>
-                                        <strong>{{ metrics.successful_results|default(0) }}/{{ job.total_urls|default(0) }}</strong>
-                                    </div>
-                                    <div class="d-flex justify-content-between">
-                                        <span>Failure Rate:</span>
-                                        <strong>
-                                            {% if metrics.failed_results is defined and job.total_urls and job.total_urls > 0 %}
-                                                {{ ((metrics.failed_results / job.total_urls) * 100)|round(1) }}%
-                                            {% else %}
-                                                0%
-                                            {% endif %}
-                                        </strong>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-md-6">
-                            <div class="card bg-light">
-                                <div class="card-body">
-                                    <h6 class="card-title text-muted mb-3">API Usage</h6>
-                                    <div class="d-flex justify-content-between mb-2">
-                                        <span>Total API Tokens:</span>
-                                        <strong>{{ metrics.total_tokens|default(0) }}</strong>
-                                    </div>
-                                    <div class="d-flex justify-content-between mb-2">
-                                        <span>Avg Tokens / URL:</span>
-                                        <strong>
-                                            {% if metrics.total_tokens is defined and metrics.successful_results is defined and metrics.successful_results > 0 %}
-                                                {{ (metrics.total_tokens / metrics.successful_results)|round|int }}
-                                            {% else %}
-                                                0
-                                            {% endif %}
-                                        </strong>
-                                    </div>
-                                    <div class="d-flex justify-content-between">
-                                        <span>Estimated Cost:</span>
-                                        <strong>
-                                            {% if metrics.total_tokens is defined %}
-                                                ${{ ((metrics.total_tokens / 1000) * 0.02)|round(2) }}
-                                            {% else %}
-                                                $0.00
-                                            {% endif %}
-                                        </strong>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Results chart -->
-                    <div class="row">
-                        <div class="col-md-6">
-                            <h6 class="text-muted mb-3">Result Distribution</h6>
-                            <div class="chart-container" style="position: relative; height:200px;">
-                                <canvas id="errorChart"></canvas>
-                            </div>
-                        </div>
-                        <div class="col-md-6">
-                            <h6 class="text-muted mb-3">Status Summary</h6>
-                            <div class="list-group">
-                                <div class="list-group-item d-flex justify-content-between align-items-center">
-                                    Successful
-                                    <span class="badge bg-success rounded-pill">{{ metrics.successful_results|default(0) }}</span>
-                                </div>
-                                <div class="list-group-item d-flex justify-content-between align-items-center">
-                                    Scraping Errors
-                                    <span class="badge bg-danger rounded-pill">{{ metrics.scrape_errors|default(0) }}</span>
-                                </div>
-                                <div class="list-group-item d-flex justify-content-between align-items-center">
-                                    Analysis Errors
-                                    <span class="badge bg-warning text-dark rounded-pill">
-                                        {% if metrics.failed_results is defined and metrics.scrape_errors is defined %}
-                                            {{ metrics.failed_results - metrics.scrape_errors }}
-                                        {% else %}
-                                            0
-                                        {% endif %}
-                                    </span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
+<!-- Job status alert area - this will be updated by the polling function -->
+<div id="jobStatus">
+    <div class="alert alert-{{ 'success' if job.status == 'completed' else 'info' if job.status == 'running' else 'warning' if job.status == 'completed_with_errors' else 'danger' if job.status == 'failed' else 'secondary' }}">
+        <strong>
+            {% if job.status == 'completed' %}Job Complete
+            {% elif job.status == 'running' %}Job In Progress
+            {% elif job.status == 'failed' %}Job Failed
+            {% elif job.status == 'completed_with_errors' %}Job Completed With Errors
+            {% else %}{{ job.status|capitalize }}
+            {% endif %}
+        </strong>
+        <p>{{ status_description }}</p>
     </div>
+</div>
 
-    <!-- Results table -->
-    <div class="card shadow-sm">
-        <div class="card-header bg-primary text-white">
-            <h5 class="mb-0">URL Results</h5>
-        </div>
-        <div class="card-body p-0">
-            {% if results %}
-            <div class="table-responsive">
-                <table class="table table-hover table-striped mb-0">
-                    <thead>
-                        <tr>
-                            <th>URL</th>
-                            <th>Status</th>
-                            <th>Title</th>
-                            <th>Words</th>
-                            <th>Tokens</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for result in results %}
-                        <tr>
-                            <td>
-                                <a href="{{ result.url }}" target="_blank" class="text-truncate d-inline-block" style="max-width: 300px;">
-                                    {{ result.url }}
-                                </a>
-                            </td>
-                            <td>
-                                {% if result.status == 'success' %}
-                                <span class="badge bg-success">Success</span>
-                                {% elif result.status == 'scrape_error' %}
-                                <span class="badge bg-danger">Scrape Error</span>
-                                {% elif result.status == 'analysis_error' %}
-                                <span class="badge bg-warning text-dark">Analysis Error</span>
-                                {% else %}
-                                <span class="badge bg-secondary">{{ result.status }}</span>
-                                {% endif %}
-                            </td>
-                            <td class="text-truncate" style="max-width: 200px;">{{ result.title }}</td>
-                            <td>{{ result.word_count|default(0) }}</td>
-                            <td>{{ result.api_tokens|default(0) }}</td>
-                            <td>
-                                <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#resultModal{{ loop.index }}">
-                                    <i class="bi bi-eye"></i> View
-                                </button>
-                            </td>
-                        </tr>
-
-                        <!-- Modal for each result -->
-                        <div class="modal fade" id="resultModal{{ loop.index }}" tabindex="-1" aria-labelledby="resultModalLabel{{ loop.index }}" aria-hidden="true">
-                            <div class="modal-dialog modal-xl modal-dialog-scrollable">
-                                <div class="modal-content">
-                                    <div class="modal-header">
-                                        <h5 class="modal-title" id="resultModalLabel{{ loop.index }}">Results for {{ result.url }}</h5>
-                                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                                    </div>
-                                    <div class="modal-body">
-                                        <ul class="nav nav-tabs" id="myTab{{ loop.index }}" role="tablist">
-                                            <li class="nav-item" role="presentation">
-                                                <button class="nav-link active" id="details-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#details{{ loop.index }}" type="button" role="tab" aria-controls="details{{ loop.index }}" aria-selected="true">
-                                                    Details
-                                                </button>
-                                            </li>
-                                            {% if result.analysis_results is defined and result.analysis_results %}
-                                                {% for prompt_name, analysis in result.analysis_results.items() %}
-                                                <li class="nav-item" role="presentation">
-                                                    <button class="nav-link" id="{{ prompt_name|lower }}-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#{{ prompt_name|lower }}{{ loop.parent.index }}" type="button" role="tab" aria-controls="{{ prompt_name|lower }}{{ loop.parent.index }}" aria-selected="false">
-                                                        {{ prompt_name }}
-                                                    </button>
-                                                </li>
-                                                {% endfor %}
-                                            {% endif %}
-                                        </ul>
-                                        <div class="tab-content pt-3" id="myTabContent{{ loop.index }}">
-                                            <div class="tab-pane fade show active" id="details{{ loop.index }}" role="tabpanel" aria-labelledby="details-tab{{ loop.index }}">
-                                                <div class="row">
-                                                    <div class="col-md-6">
-                                                        <h6>Metadata</h6>
-                                                        <table class="table table-sm">
-                                                            <tr>
-                                                                <th>URL:</th>
-                                                                <td><a href="{{ result.url }}" target="_blank">{{ result.url }}</a></td>
-                                                            </tr>
-                                                            <tr>
-                                                                <th>Title:</th>
-                                                                <td>{{ result.title }}</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <th>Status:</th>
-                                                                <td>{{ result.status }}</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <th>Word Count:</th>
-                                                                <td>{{ result.word_count|default(0) }}</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <th>API Tokens:</th>
-                                                                <td>{{ result.api_tokens|default(0) }}</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <th>Scrape Time:</th>
-                                                                <td>
-                                                                    {% if result.scrape_time is defined and result.scrape_time is not none %}
-                                                                        {{ result.scrape_time|round(2) }} seconds
-                                                                    {% else %}
-                                                                        N/A
-                                                                    {% endif %}
-                                                                </td>
-                                                            </tr>
-                                                            <tr>
-                                                                <th>Analysis Time:</th>
-                                                                <td>
-                                                                    {% if result.analysis_time is defined and result.analysis_time is not none %}
-                                                                        {{ result.analysis_time|round(2) }} seconds
-                                                                    {% else %}
-                                                                        N/A
-                                                                    {% endif %}
-                                                                </td>
-                                                            </tr>
-                                                        </table>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        {% if result.error %}
-                                                        <div class="alert alert-danger">
-                                                            <h6>Error:</h6>
-                                                            <p>{{ result.error }}</p>
-                                                        </div>
-                                                        {% endif %}
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            
-                                            {% if result.analysis_results is defined and result.analysis_results %}
-                                                {% for prompt_name, analysis in result.analysis_results.items() %}
-                                                <div class="tab-pane fade" id="{{ prompt_name|lower }}{{ loop.parent.index }}" role="tabpanel" aria-labelledby="{{ prompt_name|lower }}-tab{{ loop.parent.index }}">
-                                                    {% if analysis.error %}
-                                                    <div class="alert alert-danger">
-                                                        <h6>Error:</h6>
-                                                        <p>{{ analysis.error }}</p>
-                                                    </div>
-                                                    {% else %}
-                                                    <div class="d-flex justify-content-between mb-2">
-                                                        <span class="badge bg-info text-dark">Model: {{ analysis.model|default('Unknown') }}</span>
-                                                        <span class="badge bg-secondary">{{ analysis.tokens|default(0) }} tokens</span>
-                                                        <span class="badge bg-light text-dark">
-                                                            {% if analysis.processing_time is defined and analysis.processing_time is not none %}
-                                                                {{ analysis.processing_time|round(2) }} seconds
-                                                            {% else %}
-                                                                0 seconds
-                                                            {% endif %}
-                                                        </span>
-                                                    </div>
-                                                    <div class="border p-3 bg-light">
-                                                        {{ analysis.analysis|default('')|safe|nl2br }}
-                                                    </div>
-                                                    {% endif %}
-                                                </div>
-                                                {% endfor %}
-                                            {% endif %}
-                                        </div>
-                                    </div>
-                                    <div class="modal-footer">
-                                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
+<div class="card shadow-sm mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">
+            <i class="bi bi-file-earmark-text me-2"></i>
+            Job Status
+            {% if job.status == 'completed' %}
+                <span class="badge bg-success">Completed</span>
+            {% elif job.status == 'running' %}
+                <span class="badge bg-primary">Running</span>
+            {% elif job.status == 'failed' %}
+                <span class="badge bg-danger">Failed</span>
+            {% elif job.status == 'cancelled' %}
+                <span class="badge bg-secondary">Cancelled</span>
+            {% elif job.status == 'completed_with_errors' %}
+                <span class="badge bg-warning text-dark">Completed with Errors</span>
             {% else %}
-            <div class="alert alert-info m-3">
-                <p class="mb-0 text-center">No results available yet.</p>
-            </div>
+                <span class="badge bg-secondary">{{ job.status }}</span>
+            {% endif %}
+        </h5>
+        <div>
+            {% if job.status != 'running' %}
+                <div class="btn-group">
+                    <a href="{{ url_for('export_job', job_id=job.job_id, format='csv') }}" class="btn btn-outline-success btn-sm export-btn" title="Download all results as CSV" {{ 'disabled' if job.status == 'running' else '' }}>
+                        <i class="bi bi-file-earmark-spreadsheet"></i> Export CSV
+                    </a>
+                    <a href="{{ url_for('export_job', job_id=job.job_id, format='excel') }}" class="btn btn-outline-success btn-sm export-btn" title="Download all results as Excel" {{ 'disabled' if job.status == 'running' else '' }}>
+                        <i class="bi bi-file-earmark-excel"></i> Export Excel
+                    </a>
+                    {% if job.status != 'completed' and job.status != 'cancelled' %}
+                        <form method="post" action="{{ url_for('delete_job', job_id=job.job_id) }}" class="d-inline" onsubmit="return confirm('Are you sure you want to delete this job?');">
+                            <button type="submit" class="btn btn-outline-danger btn-sm">
+                                <i class="bi bi-trash"></i> Delete Job
+                            </button>
+                        </form>
+                    {% endif %}
+                </div>
+            {% else %}
+                <form method="post" action="{{ url_for('cancel_job', job_id=job.job_id) }}" class="d-inline" onsubmit="return confirm('Are you sure you want to cancel this job?');">
+                    <button type="submit" class="btn btn-warning btn-sm">
+                        <i class="bi bi-x-circle"></i> Cancel Job
+                    </button>
+                </form>
             {% endif %}
         </div>
     </div>
+    <div class="card-body">
+        <div class="row">
+            <!-- Job details column -->
+            <div class="col-md-4">
+                <h5 class="border-bottom pb-2">Job Details</h5>
+                <table class="table table-sm">
+                    <tr>
+                        <th>Job ID:</th>
+                        <td><code>{{ job.job_id }}</code></td>
+                    </tr>
+                    <tr>
+                        <th>Created:</th>
+                        <td>{{ job.created_at|format_date }}</td>
+                    </tr>
+                    <tr>
+                        <th>Status:</th>
+                        <td>
+                            {% if job.status == 'completed' %}
+                                <span class="badge bg-success">Completed</span>
+                            {% elif job.status == 'running' %}
+                                <span class="badge bg-primary">Running</span>
+                            {% elif job.status == 'failed' %}
+                                <span class="badge bg-danger">Failed</span>
+                            {% elif job.status == 'cancelled' %}
+                                <span class="badge bg-secondary">Cancelled</span>
+                            {% elif job.status == 'completed_with_errors' %}
+                                <span class="badge bg-warning text-dark">Completed with Errors</span>
+                            {% else %}
+                                <span class="badge bg-secondary">{{ job.status }}</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Progress:</th>
+                        <td>
+                            <div class="progress">
+                                <div id="progressBar" class="progress-bar 
+                                    {% if job.status == 'completed' %}bg-success
+                                    {% elif job.status == 'failed' %}bg-danger
+                                    {% elif job.status == 'completed_with_errors' %}bg-warning{% endif %}"
+                                    role="progressbar" 
+                                    style="width: {{ (job.processed_urls / job.total_urls * 100) if job.total_urls else 0 }}%;"
+                                    aria-valuenow="{{ (job.processed_urls / job.total_urls * 100) if job.total_urls else 0 }}" 
+                                    aria-valuemin="0" aria-valuemax="100">
+                                    {{ ((job.processed_urls / job.total_urls * 100) if job.total_urls else 0)|int }}%
+                                </div>
+                            </div>
+                            <p class="text-center mt-1" id="progressText">{{ job.processed_urls }} of {{ job.total_urls }}</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Completed:</th>
+                        <td>{{ job.completed_at|format_date if job.completed_at else 'In progress' }}</td>
+                    </tr>
+                    <tr>
+                        <th>Total URLs:</th>
+                        <td id="metricTotalUrls">{{ job.total_urls }}</td>
+                    </tr>
+                    <tr>
+                        <th>Processed:</th>
+                        <td>{{ job.processed_urls }}/{{ job.total_urls }}</td>
+                    </tr>
+                    <tr>
+                        <th>Success:</th>
+                        <td>{{ metrics.successful_results|default(0) }}</td>
+                    </tr>
+                    <tr>
+                        <th>Errors:</th>
+                        <td>{{ metrics.failed_results|default(0) }}</td>
+                    </tr>
+                </table>
+
+                <h5 class="border-bottom pb-2 mt-4">Prompts Used</h5>
+                <ul class="list-group">
+                    {% for prompt in job.prompts %}
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            {{ prompt }}
+                            <a href="{{ url_for('view_prompt', name=prompt) }}" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-eye"></i> View
+                            </a>
+                        </li>
+                    {% else %}
+                        <li class="list-group-item text-muted">No prompts specified</li>
+                    {% endfor %}
+                </ul>
+            </div>
+
+            <!-- Metrics and charts column -->
+            <div class="col-md-8">
+                <h5 class="border-bottom pb-2">Analysis Results</h5>
+
+                <!-- Metrics overview -->
+                <div class="row mb-4">
+                    <div class="col-md-6">
+                        <div class="card bg-light">
+                            <div class="card-body">
+                                <h6 class="card-title text-muted mb-3">Processing Stats</h6>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span>Total Words:</span>
+                                    <strong id="metricWords">{{ metrics.total_words|default(0) }}</strong>
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span>Successful URLs:</span>
+                                    <strong>{{ metrics.successful_results|default(0) }}/{{ job.total_urls|default(0) }}</strong>
+                                </div>
+                                <div class="d-flex justify-content-between">
+                                    <span>Failure Rate:</span>
+                                    <strong>
+                                        {% if metrics.failed_results is defined and job.total_urls and job.total_urls > 0 %}
+                                            {{ ((metrics.failed_results / job.total_urls) * 100)|round(1) }}%
+                                        {% else %}
+                                            0%
+                                        {% endif %}
+                                    </strong>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card bg-light">
+                            <div class="card-body">
+                                <h6 class="card-title text-muted mb-3">API Usage</h6>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span>Total API Tokens:</span>
+                                    <strong id="metricTokens">{{ metrics.total_tokens|default(0) }}</strong>
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span>Avg Tokens / URL:</span>
+                                    <strong>
+                                        {% if metrics.total_tokens is defined and metrics.successful_results is defined and metrics.successful_results > 0 %}
+                                            {{ (metrics.total_tokens / metrics.successful_results)|round|int }}
+                                        {% else %}
+                                            0
+                                        {% endif %}
+                                    </strong>
+                                </div>
+                                <div class="d-flex justify-content-between">
+                                    <span>Estimated Cost:</span>
+                                    <strong>
+                                        {% if metrics.total_tokens is defined %}
+                                            ${{ ((metrics.total_tokens / 1000) * 0.02)|round(2) }}
+                                        {% else %}
+                                            $0.00
+                                        {% endif %}
+                                    </strong>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Results chart -->
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6 class="text-muted mb-3">Result Distribution</h6>
+                        <div class="chart-container" style="position: relative; height:200px;">
+                            <canvas id="errorChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <h6 class="text-muted mb-3">Status Summary</h6>
+                        <div class="list-group">
+                            <div class="list-group-item d-flex justify-content-between align-items-center">
+                                Successful
+                                <span class="badge bg-success rounded-pill">{{ metrics.successful_results|default(0) }}</span>
+                            </div>
+                            <div class="list-group-item d-flex justify-content-between align-items-center">
+                                Scraping Errors
+                                <span class="badge bg-danger rounded-pill">{{ metrics.scrape_errors|default(0) }}</span>
+                            </div>
+                            <div class="list-group-item d-flex justify-content-between align-items-center">
+                                Analysis Errors
+                                <span class="badge bg-warning text-dark rounded-pill">
+                                    {% if metrics.failed_results is defined and metrics.scrape_errors is defined %}
+                                        {{ metrics.failed_results - metrics.scrape_errors }}
+                                    {% else %}
+                                        0
+                                    {% endif %}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
-{% endblock %}
 
+<!-- Results table -->
+<div class="card shadow-sm" id="resultsSection" class="{{ 'hidden' if job.status == 'running' else '' }}">
+    <div class="card-header bg-primary text-white">
+        <h5 class="mb-0">URL Results</h5>
+    </div>
+    <div class="card-body p-0">
+        {% if results %}
+        <div class="table-responsive">
+            <table class="table table-hover table-striped mb-0">
+                <thead>
+                    <tr>
+                        <th>URL</th>
+                        <th>Status</th>
+                        <th>Title</th>
+                        <th>Words</th>
+                        <th>Tokens</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for result in results %}
+                    <tr>
+                        <td>
+                            <a href="{{ result.url }}" target="_blank" class="text-truncate d-inline-block" style="max-width: 300px;">
+                                {{ result.url }}
+                            </a>
+                        </td>
+                        <td>
+                            {% if result.status == 'success' %}
+                            <span class="badge bg-success">Success</span>
+                            {% elif result.status == 'scrape_error' %}
+                            <span class="badge bg-danger">Scrape Error</span>
+                            {% elif result.status == 'analysis_error' %}
+                            <span class="badge bg-warning text-dark">Analysis Error</span>
+                            {% else %}
+                            <span class="badge bg-secondary">{{ result.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-truncate" style="max-width: 200px;">{{ result.title }}</td>
+                        <td>{{ result.word_count|default(0) }}</td>
+                        <td>{{ result.api_tokens|default(0) }}</td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#resultModal{{ loop.index }}">
+                                <i class="bi bi-eye"></i> View
+                            </button>
+                        </td>
+                    </tr>
+
+                    <!-- Modal for each result -->
+                    <div class="modal fade" id="resultModal{{ loop.index }}" tabindex="-1" aria-labelledby="resultModalLabel{{ loop.index }}" aria-hidden="true">
+                        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+                            <div class="modal-content">
+                                <div class="modal-header">
+                                    <h5 class="modal-title" id="resultModalLabel{{ loop.index }}">Results for {{ result.url }}</h5>
+                                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                </div>
+                                <div class="modal-body">
+                                    <ul class="nav nav-tabs" id="myTab{{ loop.index }}" role="tablist">
+                                        <li class="nav-item" role="presentation">
+                                            <button class="nav-link active" id="details-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#details{{ loop.index }}" type="button" role="tab" aria-controls="details{{ loop.index }}" aria-selected="true">
+                                                Details
+                                            </button>
+                                        </li>
+                                        {% if result.analysis_results is defined and result.analysis_results %}
+                                            {% for prompt_name, analysis in result.analysis_results.items() %}
+                                            <li class="nav-item" role="presentation">
+                                                <button class="nav-link" id="{{ prompt_name|lower }}-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#{{ prompt_name|lower }}{{ loop.parent.index }}" type="button" role="tab" aria-controls="{{ prompt_name|lower }}{{ loop.parent.index }}" aria-selected="false">
+                                                    {{ prompt_name }}
+                                                </button>
+                                            </li>
+                                            {% endfor %}
+                                        {% endif %}
+                                        
+                                        <!-- Added structured data tab -->
+                                        <li class="nav-item" role="presentation">
+                                            <button class="nav-link" id="structured-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#structured{{ loop.index }}" type="button" role="tab" aria-controls="structured{{ loop.index }}" aria-selected="false">
+                                                Structured Data
+                                            </button>
+                                        </li>
+                                        
+                                        <!-- Added raw data tab -->
+                                        <li class="nav-item" role="presentation">
+                                            <button class="nav-link" id="raw-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#raw{{ loop.index }}" type="button" role="tab" aria-controls="raw{{ loop.index }}" aria-selected="false">
+                                                Raw Data
+                                            </button>
+                                        </li>
+                                    </ul>
+                                    <div class="tab-content pt-3" id="myTabContent{{ loop.index }}">
+                                        <div class="tab-pane fade show active" id="details{{ loop.index }}" role="tabpanel" aria-labelledby="details-tab{{ loop.index }}">
+                                            <div class="row">
+                                                <div class="col-md-6">
+                                                    <h6>Metadata</h6>
+                                                    <table class="table table-sm">
+                                                        <tr>
+                                                            <th>URL:</th>
+                                                            <td><a href="{{ result.url }}" target="_blank">{{ result.url }}</a></td>
+                                                        </tr>
+                                                        <tr>
+                                                            <th>Title:</th>
+                                                            <td>{{ result.title }}</td>
+                                                        </tr>
+                                                        <tr>
+                                                            <th>Status:</th>
+                                                            <td>
+                                                                {% if result.status == 'success' %}
+                                                                    <span class="badge bg-success">Success</span>
+                                                                {% elif result.status == 'scrape_error' %}
+                                                                    <span class="badge bg-warning">Scrape Error</span>
+                                                                {% elif result.status == 'analysis_error' %}
+                                                                    <span class="badge bg-danger">Analysis Error</span>
+                                                                {% else %}
+                                                                    <span class="badge bg-secondary">{{ result.status }}</span>
+                                                                {% endif %}
+                                                            </td>
+                                                        </tr>
+                                                        <tr>
+                                                            <th>Word Count:</th>
+                                                            <td>{{ result.word_count|default(0)|safe_round|int }}</td>
+                                                        </tr>
+                                                        <tr>
+                                                            <th>Content Type:</th>
+                                                            <td>{{ result.content_type|default('html') }}</td>
+                                                        </tr>
+                                                        <tr>
+                                                            <th>API Tokens:</th>
+                                                            <td>{{ result.api_tokens|default(0)|safe_round|int }}</td>
+                                                        </tr>
+                                                        <tr>
+                                                            <th>Processed:</th>
+                                                            <td>{{ result.processed_at|format_date }}</td>
+                                                        </tr>
+                                                    </table>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    {% if result.error %}
+                                                    <div class="alert alert-danger">
+                                                        <h6>Error:</h6>
+                                                        <p>{{ result.error }}</p>
+                                                    </div>
+                                                    {% endif %}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        {% if result.analysis_results is defined and result.analysis_results %}
+                                            {% for prompt_name, analysis in result.analysis_results.items() %}
+                                            <div class="tab-pane fade" id="{{ prompt_name|lower }}{{ loop.parent.index }}" role="tabpanel" aria-labelledby="{{ prompt_name|lower }}-tab{{ loop.parent.index }}">
+                                                {% if analysis.error %}
+                                                <div class="alert alert-danger">
+                                                    <h6>Error:</h6>
+                                                    <p>{{ analysis.error }}</p>
+                                                </div>
+                                                {% else %}
+                                                <div class="d-flex justify-content-between mb-2">
+                                                    <span class="badge bg-info text-dark">Model: {{ analysis.model|default('Unknown') }}</span>
+                                                    <span class="badge bg-secondary">{{ analysis.tokens|default(0) }} tokens</span>
+                                                    <span class="badge bg-light text-dark">
+                                                        {% if analysis.processing_time is defined and analysis.processing_time is not none %}
+                                                            {{ analysis.processing_time|round(2) }} seconds
+                                                        {% else %}
+                                                            0 seconds
+                                                        {% endif %}
+                                                    </span>
+                                                </div>
+                                                <div class="border p-3 bg-light">
+                                                    {{ analysis.analysis|default('')|safe|nl2br }}
+                                                </div>
+                                                {% endif %}
+                                            </div>
+                                            {% endfor %}
+                                        {% endif %}
+                                        
+                                        <!-- Structured Data Tab Content -->
+                                        <div class="tab-pane fade" id="structured{{ loop.index }}" role="tabpanel" aria-labelledby="structured-tab{{ loop.index }}">
+                                            <div class="structured-data">
+                                                <div class="table-responsive">
+                                                    <table class="table table-sm table-striped">
+                                                        <thead>
+                                                            <tr>
+                                                                <th>Field</th>
+                                                                <th>Value</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            {% for field_name, field_value in result.items() if field_name.startswith(('ca_', 'cr_', 'pa_', 'si_')) %}
+                                                                <tr>
+                                                                    <td class="text-nowrap">
+                                                                        <strong>{{ field_name|replace('_', ' ')|title }}</strong>
+                                                                        <span class="text-muted d-block small">{{ field_name }}</span>
+                                                                    </td>
+                                                                    <td>{{ field_value }}</td>
+                                                                </tr>
+                                                            {% else %}
+                                                                <tr>
+                                                                    <td colspan="2" class="text-center">No structured fields found</td>
+                                                                </tr>
+                                                            {% endfor %}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Raw Data Tab Content -->
+                                        <div class="tab-pane fade" id="raw{{ loop.index }}" role="tabpanel" aria-labelledby="raw-tab{{ loop.index }}">
+                                            <div class="raw-data mt-3">
+                                                <button class="btn btn-sm btn-outline-secondary mb-2" type="button" 
+                                                        data-bs-toggle="collapse" data-bs-target="#rawContent{{ loop.index }}" 
+                                                        aria-expanded="false" aria-controls="rawContent{{ loop.index }}">
+                                                    Toggle Raw Data
+                                                </button>
+                                                <div class="collapse" id="rawContent{{ loop.index }}">
+                                                    <pre class="bg-dark text-light p-3 rounded"><code>{{ result.data }}</code></pre>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="modal-footer">
+                                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="alert alert-info m-3">
+            <p class="mb-0 text-center">No results available yet.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+</div> {% endblock %}
 {% block scripts %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script>
-    // Auto-refresh for running jobs
-    document.addEventListener('DOMContentLoaded', function() {
-        const jobStatus = '{{ job.status }}';
-        if (jobStatus === 'running') {
-            setTimeout(function() {
-                location.reload();
-            }, 5000); // Reload every 5 seconds
-        }
-    });
 
-    // Error chart
-    var errorCtx = document.getElementById('errorChart').getContext('2d');
-    var errorChart = new Chart(errorCtx, {
-        type: 'pie',
-        data: {
-            labels: ['Scraping Errors', 'Analysis Errors', 'Successful'],
-            datasets: [{
-                label: 'Error Distribution',
-                data: [
-                    {% if metrics and metrics.scrape_errors is not none %}{{ metrics.scrape_errors }}{% else %}0{% endif %},
-                    {% if metrics and metrics.failed_results is not none and metrics.scrape_errors is not none %}
-                        {{ metrics.failed_results - metrics.scrape_errors }}
-                    {% else %}0{% endif %},
-                    {% if metrics and metrics.successful_results is not none %}{{ metrics.successful_results }}{% else %}0{% endif %}
-                ],
-                backgroundColor: [
-                    'rgba(255, 99, 132, 0.2)',
-                    'rgba(255, 159, 64, 0.2)',
-                    'rgba(75, 192, 192, 0.2)'
-                ],
-                borderColor: [
-                    'rgba(255, 99, 132, 1)',
-                    'rgba(255, 159, 64, 1)',
-                    'rgba(75, 192, 192, 1)'
-                ],
-                borderWidth: 1
-            }]
-        },
-        options: {
-            responsive: true,
-            plugins: {
-                legend: {
-                    position: 'top',
-                },
-                title: {
-                    display: true,
-                    text: 'Processing Results'
-                }
-            }
-        }
-    });
-</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script> <script> // Error chart var errorCtx = document.getElementById('errorChart').getContext('2d'); var errorChart = new Chart(errorCtx, { type: 'pie', data: { labels: ['Scraping Errors', 'Analysis Errors', 'Successful'], datasets: [{ label: 'Error Distribution', data: [ {% if metrics and metrics.scrape_errors is not none %}{{ metrics.scrape_errors }}{% else %}0{% endif %}, {% if metrics and metrics.failed_results is not none and metrics.scrape_errors is not none %} {{ metrics.failed_results - metrics.scrape_errors }} {% else %}0{% endif %}, {% if metrics and metrics.successful_results is not none %}{{ metrics.successful_results }}{% else %}0{% endif %} ], backgroundColor: [ 'rgba(255, 99, 132, 0.2)', 'rgba(255, 159, 64, 0.2)', 'rgba(75, 192, 192, 0.2)' ], borderColor: [ 'rgba(255, 99, 132, 1)', 'rgba(255, 159, 64, 1)', 'rgba(75, 192, 192, 1)' ], borderWidth: 1 }] }, options: { responsive: true, plugins: { legend: { position: 'top', }, title: { display: true, text: 'Processing Results' } } } }); // Job status polling function pollJobStatus(jobId) { // Poll every 2 seconds const statusInterval = setInterval(function() { fetch(`/api/job/${jobId}`) .then(response => response.json()) .then(data => { // Update progress indicators with the response const job = data.job; const metrics = data.metrics; console.log("Job status update:", job.status, `${job.processed_urls}/${job.total_urls}`); // Update progress bar const progress = job.processed_urls / job.total_urls * 100; document.getElementById('progressBar').style.width = `${progress}%`; document.getElementById('progressBar').setAttribute('aria-valuenow', progress); document.getElementById('progressText').innerText = `${job.processed_urls} of ${job.total_urls}`; // Check if job is complete if (['completed', 'completed_with_errors', 'failed'].includes(job.status)) { clearInterval(statusInterval); console.log("Job completed with status:", job.status); // Change progress bar color based on status const progressBar = document.getElementById('progressBar'); if (job.status === 'completed') { progressBar.classList.add('bg-success'); } else if (job.status === 'failed') { progressBar.classList.add('bg-danger'); } else if (job.status === 'completed_with_errors') { progressBar.classList.add('bg-warning'); } // Show completion message document.getElementById('jobStatus').innerHTML = `<div class="alert alert-${job.status === 'failed' ? 'danger' : job.status === 'completed_with_errors' ? 'warning' : 'success'}"> <strong>${job.status === 'failed' ? 'Job Failed' : 'Job Complete'}</strong> <p>${job.status === 'completed_with_errors' ? 'Job completed with some errors.' : ''}</p> </div>`; // Enable export buttons document.querySelectorAll('.export-btn').forEach(btn => { btn.disabled = false; }); // Update metrics display updateMetricsDisplay(metrics); // Show the results section if hidden const resultsSection = document.getElementById('resultsSection'); if (resultsSection && resultsSection.classList.contains('hidden')) { resultsSection.classList.remove('hidden'); } // Refresh the page to show all results window.location.reload(); } }) .catch(error => console.error('Error polling job status:', error)); }, 2000); } // Call this function when the page loads with your job ID document.addEventListener('DOMContentLoaded', function() { const jobId = document.getElementById('jobId').value; const jobStatus = '{{ job.status }}'; if (jobId && jobStatus === 'running') { console.log("Starting job polling for job:", jobId); pollJobStatus(jobId); } else { console.log("No polling needed. Job status:", jobStatus); } }); function updateMetricsDisplay(metrics) { // Update metrics in the UI if (!metrics) return; const metricsElements = { 'total_urls': document.getElementById('metricTotalUrls'), 'total_words': document.getElementById('metricWords'), 'total_tokens': document.getElementById('metricTokens') }; for (const [key, element] of Object.entries(metricsElements)) { if (element && metrics[key] !== undefined) { element.innerText = metrics[key].toLocaleString(); } } } </script>
 {% endblock %}

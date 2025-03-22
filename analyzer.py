@@ -9,7 +9,6 @@ import os
 import threading
 from bs4 import BeautifulSoup
 import json
-import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import aiohttp
 import async_timeout
@@ -28,97 +27,12 @@ from prompt_loader import PromptLoader
 from db_manager import DatabaseManager
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize OpenAI clients
 openai_api_key = os.environ.get("OPENAI_API_KEY", "")
 client = OpenAI(api_key=openai_api_key)
 async_client = AsyncOpenAI(api_key=openai_api_key)
-
-def parse_structured_response(analysis_text, prompt_config):
-    """
-    Parse a structured response from OpenAI API based on the prompt configuration.
-    
-    Args:
-        analysis_text: The raw text response from OpenAI
-        prompt_config: The prompt configuration with output_fields and delimiter
-        
-    Returns:
-        Dictionary with parsed field values
-    """
-    parsed_fields = {}
-    delimiter = prompt_config.get('delimiter', '|||')
-    output_fields = prompt_config.get('output_fields', [])
-    
-    # Log the first few lines of the response for debugging
-    preview_lines = analysis_text.strip().split('\n')[:10]
-    logger.warning(f"No fields parsed from response. First few lines:\n{preview_lines[0]}")
-    
-    # Create a mapping of field names to their types
-    field_types = {field.get('name'): field.get('field_type', 'text') 
-                  for field in output_fields if 'name' in field}
-    
-    # Split the response into lines
-    lines = analysis_text.strip().split('\n')
-    
-    for line in lines:
-        if delimiter in line:
-            # Split at the delimiter
-            parts = line.split(delimiter, 1)
-            if len(parts) == 2:
-                field_name = parts[0].strip()
-                field_value = parts[1].strip()
-                
-                # Get field type from configuration
-                field_type = field_types.get(field_name, 'text')
-                
-                # Convert value based on field type
-                if field_type in ('int', 'integer'):
-                    try:
-                        # Handle values like [1-10 or 0] by extracting the first number
-                        if '[' in field_value and ']' in field_value:
-                            import re
-                            numbers = re.findall(r'\d+', field_value)
-                            if numbers:
-                                parsed_fields[field_name] = int(numbers[0])
-                            else:
-                                parsed_fields[field_name] = 0
-                        else:
-                            parsed_fields[field_name] = int(field_value)
-                    except (ValueError, TypeError):
-                        parsed_fields[field_name] = 0
-                        
-                elif field_type in ('float', 'number'):
-                    try:
-                        parsed_fields[field_name] = float(field_value)
-                    except (ValueError, TypeError):
-                        parsed_fields[field_name] = 0.0
-                        
-                elif field_type == 'boolean':
-                    parsed_fields[field_name] = field_value.lower() in ('true', 'yes', '1')
-                    
-                elif field_type == 'list':
-                    if field_value == "None" or field_value == "[None]":
-                        parsed_fields[field_name] = []
-                    elif field_value.startswith('[') and field_value.endswith(']'):
-                        # Try to parse as JSON list
-                        try:
-                            import json
-                            parsed_fields[field_name] = json.loads(field_value.replace("'", "\""))
-                        except json.JSONDecodeError:
-                            # Fall back to simple string splitting
-                            items = field_value[1:-1].split(',')
-                            parsed_fields[field_name] = [item.strip().strip("'\"") for item in items]
-                    else:
-                        # Just store as a single-item list
-                        parsed_fields[field_name] = [field_value]
-                else:
-                    # Default to text
-                    parsed_fields[field_name] = field_value
-    
-    logger.info(f"Parsed {len(parsed_fields)} fields from response")
-    return parsed_fields
 
 class AdvancedRateLimiter:
     """Advanced rate limiter using simple time-based throttling"""
@@ -391,123 +305,22 @@ class ContentAnalyzer:
         
         return processed_results
     
-
-    async def analyze_with_prompt_async(self, content: str, prompt_config: Dict[str, Any], 
-                          company_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Asynchronously analyze content using OpenAI model with a specific prompt configuration.
-        """
-        try:
-            start_time = time.time()
-            
-            # Force reload API key from environment before each API call
-            api_key = os.environ.get("OPENAI_API_KEY", self.openai_api_key)
-            
-            # Make a direct client instance for this specific call
-            async_client = AsyncOpenAI(api_key=api_key)
-            
-            if not api_key:
-                logger.error("OpenAI API key missing for API call")
-                return {
-                    "error": "OpenAI API key missing",
-                    "analysis": "Error: Could not complete analysis due to missing API key."
-                }
-                
-            # Extract prompt configuration
-            model = prompt_config.get('model', 'gpt-4')
-            system_message = prompt_config.get('system_message', '')
-            user_message_template = prompt_config.get('user_message', '')
-            temperature = prompt_config.get('temperature', 0.3)
-            max_tokens = prompt_config.get('max_tokens', 1500)
-            
-            # Prepare the company context
-            company_context = ""
-            if company_info:
-                company_context = "Company Information:\n"
-                for key, value in company_info.items():
-                    company_context += f"- {key.capitalize()}: {value}\n"
-            
-            # Format user message with the content and company context
-            # Fix: Use explicit named parameters and ensure content is properly included
-            try:
-                if "{content}" in user_message_template:
-                    user_message = user_message_template.format(
-                        content=content[:50000],  # Limit content length
-                        company_context=company_context
-                    )
-                else:
-                    # If there's no {content} placeholder, append content
-                    user_message = user_message_template + "\n\nContent to analyze:\n" + content[:50000]
-            except Exception as format_error:
-                logger.error(f"Error formatting user message: {str(format_error)}")
-                # Fallback to simple concatenation
-                user_message = f"{user_message_template}\n\nContent to analyze:\n{content[:50000]}"
-            
-            # Log the request details
-            logger.info(f"Calling OpenAI API with model {model} - content length: {len(content)} chars")
-            
-            # Skip rate limiter and make direct API call
-            try:
-                # Call the OpenAI API asynchronously
-                response = await async_client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_message},
-                        {"role": "user", "content": user_message}
-                    ],
-                    temperature=temperature,
-                    max_tokens=max_tokens
-                )
-                
-                # Calculate token usage
-                prompt_tokens = response.usage.prompt_tokens
-                completion_tokens = response.usage.completion_tokens
-                total_tokens = response.usage.total_tokens
-                
-                # Extract the response
-                analysis_text = response.choices[0].message.content
-                
-                # Parse the structured fields from the analysis text using our dedicated function
-                parsed_fields = parse_structured_response(analysis_text, prompt_config)
-                logger.info(f"Parsed {len(parsed_fields)} structured fields from the response")
-                
-                # Calculate processing time
-                processing_time = time.time() - start_time
-                
-                logger.info(f"OpenAI API call completed in {processing_time:.2f}s")
-                logger.info(f"Token usage: {total_tokens} tokens")
-                
-                # Return both the raw analysis and the parsed fields
-                return {
-                    "analysis": analysis_text,
-                    "parsed_fields": parsed_fields,  # Add the structured fields
-                    "model": model,
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": total_tokens,
-                    "processing_time": processing_time
-                }
-                
-            except Exception as api_error:
-                logger.error(f"Error calling OpenAI API: {str(api_error)}")
-                return {
-                    "error": f"API error: {str(api_error)}",
-                    "analysis": "Error: Could not complete analysis due to API error."
-                }
-            
-        except Exception as e:
-            logger.error(f"Error in async OpenAI API call: {str(e)}")
-            return {
-                "error": str(e),
-                "analysis": "Error: Could not complete analysis."
-            }
-    
     async def process_url_async(self, url: str, prompt_names: List[str], 
                              company_info: Optional[Dict[str, Any]] = None,
                              content_type: str = "html", 
                              force_browser: bool = False) -> Dict[str, Any]:
         """
         Asynchronously process a URL by scraping content and analyzing it.
+        
+        Args:
+            url: URL to process
+            prompt_names: List of prompt configuration names to use
+            company_info: Optional company context info
+            content_type: Content type (html, pdf, etc.)
+            force_browser: Whether to force browser-based scraping
+            
+        Returns:
+            Dictionary containing processing results
         """
         logger.info(f"Async processing URL: {url} with {len(prompt_names)} prompts")
         
@@ -522,8 +335,7 @@ class ContentAnalyzer:
             "scrape_time": 0,
             "analysis_time": 0,
             "total_time": 0,
-            "analysis_results": {},
-            "structured_data": {}  # Add a container for structured data
+            "analysis_results": {}
         }
         
         start_time = time.time()
@@ -587,14 +399,8 @@ class ContentAnalyzer:
                     "analysis": analysis_result.get("analysis", ""),
                     "model": analysis_result.get("model", ""),
                     "tokens": analysis_result.get("total_tokens", 0),
-                    "processing_time": analysis_result.get("processing_time", 0),
-                    "parsed_fields": analysis_result.get("parsed_fields", {})  # Include parsed fields here
+                    "processing_time": analysis_result.get("processing_time", 0)
                 }
-                
-                # Add the parsed structured data to the result
-                if "parsed_fields" in analysis_result:
-                    result["structured_data"][prompt_name] = analysis_result["parsed_fields"]
-                    logger.info(f"Added {len(analysis_result['parsed_fields'])} structured fields for prompt '{prompt_name}'")
                 
                 # Update token count
                 api_tokens += analysis_result.get("total_tokens", 0)
@@ -633,12 +439,116 @@ class ContentAnalyzer:
             loop.close()
         return result
     
+    async def analyze_with_prompt_async(self, content: str, prompt_config: Dict[str, Any], 
+                                  company_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Asynchronously analyze content using OpenAI model with a specific prompt configuration.
+        """
+        try:
+            start_time = time.time()
+            
+            # Force reload API key from environment before each API call
+            api_key = os.environ.get("OPENAI_API_KEY", self.openai_api_key)
+            
+            # Make a direct client instance for this specific call
+            async_client = AsyncOpenAI(api_key=api_key)
+            
+            if not api_key:
+                logger.error("OpenAI API key missing for API call")
+                return {
+                    "error": "OpenAI API key missing",
+                    "analysis": "Error: Could not complete analysis due to missing API key."
+                }
+                
+            # Extract prompt configuration
+            model = prompt_config.get('model', 'gpt-4')
+            system_message = prompt_config.get('system_message', '')
+            user_message_template = prompt_config.get('user_message', '')
+            temperature = prompt_config.get('temperature', 0.3)
+            max_tokens = prompt_config.get('max_tokens', 1500)
+            
+            # Prepare the company context
+            company_context = ""
+            if company_info:
+                company_context = "Company Information:\n"
+                for key, value in company_info.items():
+                    company_context += f"- {key.capitalize()}: {value}\n"
+            
+            # Format user message with the content and company context
+            user_message = user_message_template.format(
+                content=content[:50000],  # Limit content length
+                company_context=company_context
+            )
+            
+            # Log the request details
+            logger.info(f"Calling OpenAI API with model {model} - content length: {len(content)} chars")
+            
+            # Skip rate limiter and make direct API call
+            try:
+                # Call the OpenAI API asynchronously
+                response = await async_client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": user_message}
+                    ],
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                
+                # Calculate token usage
+                prompt_tokens = response.usage.prompt_tokens
+                completion_tokens = response.usage.completion_tokens
+                total_tokens = response.usage.total_tokens
+                
+                # Extract the response
+                analysis_text = response.choices[0].message.content
+                
+                # Calculate processing time
+                processing_time = time.time() - start_time
+                
+                logger.info(f"OpenAI API call completed in {processing_time:.2f}s")
+                logger.info(f"Token usage: {total_tokens} tokens")
+                
+                return {
+                    "analysis": analysis_text,
+                    "model": model,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "processing_time": processing_time
+                }
+                
+            except Exception as api_error:
+                logger.error(f"Error calling OpenAI API: {str(api_error)}")
+                return {
+                    "error": f"API error: {str(api_error)}",
+                    "analysis": "Error: Could not complete analysis due to API error."
+                }
+            
+        except Exception as e:
+            logger.error(f"Error in async OpenAI API call: {str(e)}")
+            return {
+                "error": str(e),
+                "analysis": "Error: Could not complete analysis."
+            }
+    
     def process_url(self, url: str, prompt_names: List[str], 
              company_info: Optional[Dict[str, Any]] = None,
              content_type: str = "html", 
              force_browser: bool = False) -> Dict[str, Any]:
         """
         Process a single URL by scraping content and analyzing it with selected prompts.
+        
+        Args:
+            url: URL to process
+            prompt_names: List of prompt configuration names to use
+            company_info: Optional company context info
+            content_type: Content type (html, pdf, etc.)
+            force_browser: Whether to force browser-based scraping
+            
+        Returns:
+            Dictionary containing processing results formatted for database storage
         """
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -658,15 +568,6 @@ class ContentAnalyzer:
             # Calculate API tokens used
             api_tokens = raw_result.get("api_tokens", 0)
             
-            # Get the structured data from the analysis
-            structured_data = raw_result.get("structured_data", {})
-            
-            # Combine analysis results and structured data
-            combined_data = {
-                "analysis_results": raw_result.get("analysis_results", {}),
-                "structured_data": structured_data
-            }
-            
             # Format result to match database schema (results table)
             result = {
                 'url': url,
@@ -674,19 +575,12 @@ class ContentAnalyzer:
                 'title': raw_result.get('title', ''),
                 'content_type': raw_result.get('content_type', 'html'),
                 'word_count': raw_result.get('word_count', 0),
-                'processed_at': current_time,
-                'prompt_name': prompt_name,
+                'processed_at': current_time,  # Use processed_at instead of created_at
+                'prompt_name': prompt_name,    # Use first prompt as primary prompt
                 'api_tokens': api_tokens,
                 'error': raw_result.get('error', ''),
-                'data': json.dumps(combined_data)  # Save combined data with structured fields
+                'data': json.dumps(raw_result.get('analysis_results', {}))
             }
-            
-            # Also add the structured fields directly to the result for easy access in exports
-            if prompt_name in structured_data:
-                logger.info(f"Adding {len(structured_data[prompt_name])} structured fields to result")
-                for field_name, field_value in structured_data[prompt_name].items():
-                    result[field_name] = field_value
-                    logger.debug(f"Added field '{field_name}' with value: {field_value}")
             
             # Log successful processing
             logger.info(f"Processed URL {url} with {len(prompt_names)} prompts - Status: {result['status']}")
@@ -702,14 +596,46 @@ class ContentAnalyzer:
                 'title': '',
                 'content_type': content_type,
                 'word_count': 0,
-                'processed_at': time.time(),
+                'processed_at': time.time(),  # Current time
                 'prompt_name': prompt_names[0] if prompt_names else "",
                 'api_tokens': 0,
                 'error': str(e),
                 'data': '{}'
             }
         finally:
+            self.close_async_connections(loop)
             loop.close()
+
+    def close_async_connections(loop=None):
+        """Properly close async connections to prevent event loop errors."""
+        import asyncio
+        
+        try:
+            # Get the current event loop if none is provided
+            if loop is None:
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    # If no event loop exists, there's nothing to clean up
+                    return
+            
+            # Get all tasks in the loop
+            pending = asyncio.all_tasks(loop)
+            
+            # Create a task to gracefully cancel all pending tasks
+            if pending:
+                # Create a future to wait for the cleanup
+                cleanup_future = asyncio.run_coroutine_threadsafe(
+                    asyncio.gather(*pending, return_exceptions=True),
+                    loop
+                )
+                try:
+                    # Wait for a short timeout
+                    cleanup_future.result(timeout=1.0)
+                except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
+                    logger.warning("Timed out waiting for task cleanup")
+        except Exception as e:
+            logger.warning(f"Error during async cleanup: {e}")
 
 
 class URLProcessor:
@@ -720,130 +646,128 @@ class URLProcessor:
     def __init__(self, analyzer: ContentAnalyzer, db_manager: DatabaseManager):
         """Initialize the URL processor."""
         self.analyzer = analyzer
-        self.db_manager = db_manager  # Store as db_manager, not db
-        self.logger = logging.getLogger("url_processor")
+        self.db = db_manager
     
-    async def process_urls_async(self, job_id: str, url_data_list: List[Dict[str, Any]], 
-                             prompt_names: List[str], force_browser: bool = False, premium_proxy: bool = False):
+    async def _process_urls_async(self, job_id: str, url_data_list: List[Dict[str, Any]], prompt_names: List[str]):
         """
-        Process URLs asynchronously with controlled concurrency.
-        
-        Args:
-            job_id: Job ID for this batch of URLs
-            url_data_list: List of URL data dictionaries
-            prompt_names: List of prompt names to use for analysis
-            force_browser: Whether to force browser rendering
-            premium_proxy: Whether to use premium proxy
-            
-        Returns:
-            Tuple of (processed_count, error_count)
+        Process URLs asynchronously in batches with controlled concurrency.
         """
-        # Initialize counters
         total_urls = len(url_data_list)
         processed = 0
         errors = 0
         
-        # Determine concurrency from environment variable
-        max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "3"))
+        # Determine optimal batch size and concurrency
+        batch_size = int(os.environ.get("BATCH_SIZE", "10"))
+        max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "5"))
         
-        self.logger.info(f"Processing job {job_id} with {total_urls} URLs using concurrency {max_concurrency}")
+        logger.info(f"Processing job {job_id} with {total_urls} URLs in batches of {batch_size} with max concurrency {max_concurrency}")
         
-        # Update job status to running
-        self.db_manager.update_job_status(
-            job_id=job_id,
-            status="running",
-            total_urls=total_urls,
-            processed_urls=0,
-            error_count=0
-        )
+        # Split into batches
+        batches = [url_data_list[i:i + batch_size] for i in range(0, len(url_data_list), batch_size)]
         
-        # Create semaphore to control concurrency
+        # Semaphore to control concurrency
         semaphore = asyncio.Semaphore(max_concurrency)
         
         async def process_url_with_semaphore(url_data):
             """Process a single URL with semaphore control"""
             async with semaphore:
-                url = url_data.get('url') if isinstance(url_data, dict) else url_data
-                company_info = url_data.get('company_info') if isinstance(url_data, dict) else None
-                content_type = url_data.get('content_type', 'html') if isinstance(url_data, dict) else 'html'
-                url_force_browser = url_data.get('force_browser', force_browser) if isinstance(url_data, dict) else force_browser
+                url = url_data.get('url')
+                company_info = url_data.get('company_info')
+                content_type = url_data.get('content_type', 'html')
+                force_browser = url_data.get('force_browser', False)
                 
                 try:
-                    self.logger.info(f"Processing URL: {url}")
                     result = await self.analyzer.process_url_async(
                         url=url,
                         prompt_names=prompt_names,
                         company_info=company_info,
                         content_type=content_type, 
-                        force_browser=url_force_browser
+                        force_browser=force_browser
                     )
-                    
-                    # Add job ID to result
                     result['job_id'] = job_id
                     return result
-                    
                 except Exception as e:
-                    self.logger.error(f"Error processing URL {url}: {str(e)}")
+                    logger.error(f"Error processing URL {url}: {str(e)}")
                     return {
                         "url": url,
                         "job_id": job_id,
                         "status": "error",
                         "error": str(e),
-                        "processed_at": time.time()
+                        "created_at": datetime.now().isoformat()
                     }
         
-        # Create tasks for all URLs
-        tasks = []
-        for url_data in url_data_list:
-            if isinstance(url_data, dict) and url_data.get('url'):
-                tasks.append(process_url_with_semaphore(url_data))
-            elif isinstance(url_data, str):
-                tasks.append(process_url_with_semaphore({'url': url_data}))
+        # Process each batch
+        for i, batch in enumerate(batches):
+            logger.info(f"Processing batch {i+1}/{len(batches)} for job {job_id}")
+            
+            # Create tasks for all URLs in the batch
+            tasks = [process_url_with_semaphore(url_data) for url_data in batch if url_data.get('url')]
+            
+            # Process the batch
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Save results and update counters
+            for result in batch_results:
+                if isinstance(result, Exception):
+                    logger.error(f"Exception in URL processing: {str(result)}")
+                    errors += 1
+                    continue
                 
-        # Process all URLs in parallel but limited by semaphore
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Process results
-        for result in results:
-            if isinstance(result, Exception):
-                self.logger.error(f"Exception processing URL: {str(result)}")
-                errors += 1
-                continue
-                
-            try:
                 # Save result to database
-                self.db_manager.save_result(result)  # Use db_manager not db
+                self.db.save_result(result)
                 
                 # Update counters
                 processed += 1
                 if result.get('status') != 'success':
                     errors += 1
-                
-                # Update job status for progress tracking
-                self.db_manager.update_job_status(  # Use db_manager not db
-                    job_id=job_id,
-                    processed_urls=processed,
-                    error_count=errors
-                )
-            except Exception as e:
-                self.logger.error(f"Error saving URL result: {str(e)}")
-                errors += 1
-        
-        # Determine final job status
-        final_status = "completed"
-        if processed == 0:
-            final_status = "failed"
-        elif errors > 0:
-            final_status = "completed_with_errors"
             
-        # Update job completion status
-        self.db_manager.update_job_status(  # Use db_manager not db
+            # Update job status after each batch
+            self.db.update_job_status(
+                job_id=job_id,
+                processed_urls=processed,
+                error_count=errors
+            )
+            
+            logger.info(f"Completed batch {i+1}/{len(batches)} for job {job_id} - {processed}/{total_urls} processed, {errors} errors")
+        
+        # Mark job as completed
+        final_status = "completed" if errors == 0 else "completed_with_errors"
+        self.db.update_job_status(
             job_id=job_id,
             status=final_status,
             processed_urls=processed,
             error_count=errors,
-            completed_at=time.time()
+            completed_at=datetime.now().isoformat()
         )
         
-        self.logger.info(f"Finished job {job_id}: {processed}/{total_urls} URLs processed, {errors} errors")
-        return processed, errors
+        logger.info(f"Finished job {job_id}: {processed}/{total_urls} URLs processed, {errors} errors")
+    
+    def process_url_batch(self, job_id: str, url_data_list: List[Dict[str, Any]], prompt_names: List[str]):
+        """
+        Process a batch of URLs with their specific company contexts.
+        Wrapper for the async version.
+        
+        Args:
+            job_id: The job identifier
+            url_data_list: List of dictionaries containing URL and its associated company context
+                Each dictionary should have at least a 'url' key and optionally a 'company_info' key
+            prompt_names: List of prompt configuration names to use
+        """
+        # Update job status to running
+        self.db.update_job_status(
+            job_id=job_id,
+            status="running",
+            total_urls=len(url_data_list),
+            processed_urls=0,
+            error_count=0
+        )
+        
+        # Run the async version in a new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(
+                self._process_urls_async(job_id, url_data_list, prompt_names)
+            )
+        finally:
+            loop.close()
