@@ -1198,15 +1198,12 @@ def test_database():
             
         test_db = DatabaseManager(test_db_path)
         
-        # Create a test job
-        job_id = "test-job-" + datetime.now().strftime("%Y%m%d%H%M%S")
-        company_info = {"name": "ACME Corp", "industry": "Technology"}
-        
-        test_db.create_job(
-            job_id=job_id,
+        # Create a test job - REMOVE job_id parameter from here
+        job_id = test_db.create_job(
+            urls=["https://example.com"],  # Add this required parameter
+            prompts=["test_prompt"],  # Changed from prompt_names to prompts
             name="Test Job", 
-            prompt_names=["test_prompt"],
-            company_info=company_info
+            company_info={"name": "ACME Corp", "industry": "Technology"}
         )
         
         # Update job status
@@ -1219,11 +1216,13 @@ def test_database():
         
         # Add a test result
         test_result = {
+            "job_id": job_id,  # Include job_id in the result dict
             "url": "https://example.com",
             "title": "Example Website",
             "status": "success",
             "content_type": "html",
             "word_count": 1000,
+            "processed_at": time.time(),
             "prompt_name": "test_prompt",
             "api_tokens": 500,
             "ca_target_audience": "Developers",
@@ -1231,7 +1230,8 @@ def test_database():
             "ca_key_themes": "Testing, Databases, Python"
         }
         
-        result_id = test_db.save_result(job_id, test_result)
+        # Pass the entire result dict to save_result
+        result_id = test_db.save_result(test_result)
         
         # Get the job
         job = test_db.get_job(job_id)

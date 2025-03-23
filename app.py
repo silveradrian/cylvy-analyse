@@ -6,7 +6,6 @@ This is the main Flask application that provides a web interface
 for content analysis using OpenAI API and custom prompt configurations.
 """
 
-
 import pytz
 import asyncio
 import os
@@ -19,9 +18,10 @@ import pandas as pd
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template, redirect, url_for, send_file, Response, flash
+
 # Import our custom modules
 from db_manager import db
-from analyzer import ContentAnalyzer
+from analyzer import ContentAnalyzer, URLProcessor
 from prompt_loader import list_available_prompts, get_prompt_by_name, PromptLoader
 
 # Configure logging
@@ -43,37 +43,114 @@ analyzer = ContentAnalyzer()
 job_queue = {}
 active_threads = set()
 
-
-def detect_content_type(url: str, default_type: str = "auto") -> str:
+def process_urls_in_background(job_id: str, urls: List[str], prompt_names: List[str], 
+                            company_info: Optional[Dict[str, Any]] = None):
     """
-    Detect content type from URL extension or return default.
-    
-    Args:
-        url: URL to analyze
-        default_type: Default content type to return if no extension matches
-        
-    Returns:
-        Detected content type (html, pdf, docx, pptx)
+    Process a list of URLs in the background.
     """
-    url_lower = url.lower()
-    
-    # Check extensions
-    if url_lower.endswith(".pdf"):
-        return "pdf"
-    elif url_lower.endswith(".docx"):
-        return "docx"
-    elif url_lower.endswith(".pptx"):
-        return "pptx"
-    elif url_lower.endswith((".html", ".htm", ".php", ".asp", ".aspx")):
-        return "html"
+    try:
+        logger.info(f"Starting background processing for job {job_id} with {len(urls)} URLs")
         
-    # Check default type
-    if default_type != "auto":
-        return default_type
+        # Fix 1: Use get_running_loop or create a new one properly
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         
-    # Default to HTML for any other URL
-    return "html"
-
+        # Fix 2: Initialize error_count at the start
+        error_count = 0
+        processed_count = 0
+        
+        # Update job status to running
+        db.update_job_status(
+            job_id=job_id,
+            status="running",
+            total_urls=len(urls),
+            processed_urls=0,
+            error_count=0
+        )
+        
+        # Process each URL
+        for url in urls:
+            try:
+                # Check if the job has been cancelled
+                job = db.get_job(job_id)
+                if job and job.get('status') == 'cancelled':
+                    logger.info(f"Job {job_id} was cancelled - stopping processing")
+                    break
+                
+                # Process the URL - handle URLs as strings or dicts
+                url_string = url if isinstance(url, str) else url.get('url')
+                
+                # Process the URL
+                result = analyzer.process_url(url_string, prompt_names, company_info)
+                
+                # Fix 3: Ensure result has job_id for database storage
+                result['job_id'] = job_id
+                
+                # Save the result
+                db.save_result(result)  # Updated to match your current db_manager API
+                
+                # Update counters
+                processed_count += 1
+                if result.get('status') in ['error', 'scrape_error', 'analysis_error']:
+                    error_count += 1
+                
+                # Update job status
+                db.update_job_status(
+                    job_id=job_id,
+                    status="running",
+                    processed_urls=processed_count,
+                    error_count=error_count
+                )
+                
+                logger.info(f"Processed URL {processed_count}/{len(urls)} for job {job_id}")
+                
+            except Exception as e:
+                logger.error(f"Error processing URL {url} for job {job_id}: {str(e)}")
+                error_count += 1
+                
+                # Update job status
+                db.update_job_status(
+                    job_id=job_id,
+                    status="running",
+                    processed_urls=processed_count,
+                    error_count=error_count
+                )
+        
+        # Mark the job as completed
+        final_status = "completed"
+        if processed_count == 0:
+            final_status = "failed"
+        elif error_count > 0:
+            final_status = "completed_with_errors"
+        
+        db.update_job_status(
+            job_id=job_id,
+            status=final_status,
+            processed_urls=processed_count,
+            error_count=error_count,
+            completed_at=datetime.now().isoformat()
+        )
+        
+        logger.info(f"Completed background processing for job {job_id} - status: {final_status}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error in background processing for job {job_id}: {str(e)}")
+        
+        # Mark the job as failed - fix: use local error_count or default to 1
+        db.update_job_status(
+            job_id=job_id,
+            status="failed",
+            error_count=error_count if 'error_count' in locals() else 1
+        )
+        return False
+    finally:
+        # Remove the thread from active threads
+        if threading.current_thread().ident in active_threads:
+            active_threads.remove(threading.current_thread().ident)
 
 
 def process_urls_in_parallel(job_id: str, url_data_list: List[Dict[str, Any]], 
@@ -128,13 +205,14 @@ def process_urls_in_parallel(job_id: str, url_data_list: List[Dict[str, Any]],
                     use_browser = url_data.get('force_browser', force_browser) if isinstance(url_data, dict) else force_browser
                     
                     try:
-                        # Process URL
+                        # Process URL - CRITICAL FIX: Pass job_id parameter here
                         result = await analyzer_instance.process_url_async(
                             url=url,
                             prompt_names=prompt_names,
                             company_info=company_info,
                             content_type=content_type,
-                            force_browser=use_browser
+                            force_browser=use_browser,
+                            job_id=job_id  # Add this parameter to ensure job_id is passed to BigQuery
                         )
                         
                         # Add job ID
@@ -262,156 +340,6 @@ def process_urls_in_parallel(job_id: str, url_data_list: List[Dict[str, Any]],
         if threading.current_thread().ident in active_threads:
             active_threads.remove(threading.current_thread().ident)
 
-
-
-
-def process_urls_in_background(job_id, url_data_list, prompt_names, company_info=None):
-    """
-    Process URLs in background thread using concurrency.
-    """
-    try:
-        import concurrent.futures
-        from concurrent.futures import ThreadPoolExecutor
-        
-        logger.info(f"Starting background processing for job {job_id} with {len(url_data_list)} URLs")
-        
-        # Verify job_id is present
-        if not job_id:
-            logger.error("Missing job_id in background processing")
-            return False
-        
-        # Initialize counters
-        processed_count = 0
-        error_count = 0
-        
-        # Update job status to running
-        db.update_job_status(
-            job_id=job_id,
-            status="running",
-            total_urls=len(url_data_list),
-            processed_urls=0,
-            error_count=0
-        )
-        
-        # Initialize analyzer
-        analyzer = ContentAnalyzer()
-        
-        # Determine max concurrency - use environment variable or default to 20
-        max_workers = min(int(os.environ.get('MAX_CONCURRENCY', '20')), len(url_data_list))
-        logger.info(f"Processing with max concurrency of {max_workers} workers")
-        
-        # Define function to process a single URL
-        def process_single_url(url_data):
-            try:
-                # Get URL from data
-                url = url_data.get('url') if isinstance(url_data, dict) else url_data
-                
-                # Process URL
-                result = analyzer.process_url(
-                    url=url,
-                    prompt_names=prompt_names,
-                    company_info=company_info
-                )
-                
-                # Ensure job_id is set
-                result['job_id'] = job_id
-                
-                return result, None  # Return result and no error
-            except Exception as e:
-                logger.error(f"Error processing URL {url}: {str(e)}")
-                return None, str(e)  # Return no result and the error
-        
-        # Use ThreadPoolExecutor to process URLs concurrently
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all URLs for processing
-            future_to_url = {executor.submit(process_single_url, url_data): url_data 
-                            for url_data in url_data_list}
-            
-            # Process results as they complete
-            for future in concurrent.futures.as_completed(future_to_url):
-                url_data = future_to_url[future]
-                url = url_data.get('url') if isinstance(url_data, dict) else url_data
-                
-                try:
-                    result, error = future.result()
-                    
-                    # Update counters
-                    processed_count += 1
-                    
-                    if error:
-                        error_count += 1
-                        logger.error(f"Error processing URL {url}: {error}")
-                    else:
-                        # Save result to database
-                        db.save_result(result)
-                        
-                        # Check if result indicates an error
-                        if result.get('status') != 'success':
-                            error_count += 1
-                    
-                    # Update job status
-                    db.update_job_status(
-                        job_id=job_id,
-                        status="running",
-                        processed_urls=processed_count,
-                        error_count=error_count
-                    )
-                    
-                    logger.info(f"Processed URL {processed_count}/{len(url_data_list)} for job {job_id}")
-                    
-                except Exception as e:
-                    processed_count += 1
-                    error_count += 1
-                    logger.error(f"Error handling result for URL {url}: {str(e)}")
-                    
-                    # Update job status
-                    db.update_job_status(
-                        job_id=job_id,
-                        status="running",
-                        processed_urls=processed_count,
-                        error_count=error_count
-                    )
-        
-        # Update job status to completed
-        final_status = "completed"
-        if processed_count == 0:
-            final_status = "failed"
-        elif error_count > 0:
-            final_status = "completed_with_errors"
-        
-        db.update_job_status(
-            job_id=job_id,
-            status=final_status,
-            processed_urls=processed_count,
-            error_count=error_count,
-            completed_at=time.time()
-        )
-        
-        logger.info(f"Completed background processing for job {job_id} - status: {final_status}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error in background processing: {str(e)}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        
-        # Update job status to failed
-        try:
-            db.update_job_status(
-                job_id=job_id,
-                status="failed",
-                error_count=error_count if 'error_count' in locals() else 1
-            )
-        except:
-            pass
-        
-        return False
-    
-    finally:
-        # Remove thread from active threads
-        if threading.current_thread().ident in active_threads:
-            active_threads.remove(threading.current_thread().ident)
-
 @app.template_filter('format_date')
 def format_date(value, format='%Y-%m-%d %H:%M:%S'):
     """Format a date time to a readable format."""
@@ -467,6 +395,58 @@ def get_attribute(obj, attr, default=""):
 
 # Flask routes
 
+@app.route('/api/debug/job/<job_id>/data')
+def debug_job_data(job_id):
+    """Debug endpoint to examine the data structure for a job."""
+    try:
+        results = db.get_results_for_job(job_id)
+        if not results:
+            return jsonify({"error": "No results found"})
+            
+        # Get the first result
+        result = results[0]
+        
+        # Basic info
+        response = {
+            "job_id": job_id,
+            "result_keys": list(result.keys()),
+            "result_values": {}
+        }
+        
+        # Add basic values
+        for key in ['url', 'status', 'title', 'word_count', 'content_type']:
+            if key in result:
+                response["result_values"][key] = result[key]
+        
+        # Check data field
+        if 'data' in result:
+            data_value = result['data']
+            response["data_type"] = str(type(data_value))
+            response["data_sample"] = str(data_value)[:500] if isinstance(data_value, str) else "Not a string"
+            
+            # Try to parse if it's a string
+            if isinstance(data_value, str):
+                try:
+                    parsed = json.loads(data_value)
+                    response["parsed_data_keys"] = list(parsed.keys()) if isinstance(parsed, dict) else "Not a dict"
+                    
+                    # Check for structured data
+                    if isinstance(parsed, dict) and 'structured_data' in parsed:
+                        struct_data = parsed['structured_data']
+                        response["structured_data_keys"] = list(struct_data.keys()) if isinstance(struct_data, dict) else "Not a dict"
+                        
+                        if isinstance(struct_data, dict):
+                            for prompt_name, fields in struct_data.items():
+                                response[f"prompt_{prompt_name}_field_count"] = len(fields) if isinstance(fields, dict) else "Not a dict"
+                                response[f"prompt_{prompt_name}_fields"] = list(fields.keys())[:10] if isinstance(fields, dict) else "Not a dict"
+                except Exception as e:
+                    response["json_parse_error"] = str(e)
+        
+        return jsonify(response)
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
 @app.route('/debug/schema')
 def debug_schema():
     """Debug endpoint to view database schema"""
@@ -511,6 +491,112 @@ def index():
             page_title="Error"
         )
 
+
+
+
+@app.route('/analyze', methods=['POST'])
+def analyze():
+    """
+    Handle form submission for URL analysis with parallel processing.
+    """
+    try:
+        # Get form data
+        urls_input = request.form.get('urls', '').strip()
+        prompt_names = request.form.getlist('prompts')
+        force_browser = 'force_browser' in request.form
+        premium_proxy = 'premium_proxy' in request.form
+        
+        # Initialize url_data_list
+        url_data_list = []
+        
+        # Check input file first (prioritize file over text input)
+        if 'file' in request.files and request.files['file'].filename:
+            file = request.files['file']
+            
+            # Check file extension
+            if file.filename.endswith('.csv'):
+                # Parse CSV file for URLs with company context
+                url_data_list = parse_csv_file(file)
+            elif file.filename.endswith(('.xlsx', '.xls')):
+                # Parse Excel file for URLs with company context
+                if 'parse_excel_file' in globals():
+                    url_data_list = parse_excel_file(file)
+                else:
+                    flash('Excel parsing is not implemented', 'warning')
+            elif file.filename.endswith('.json'):
+                # Parse JSON file for URLs with company context
+                if 'parse_json_file' in globals():
+                    url_data_list = parse_json_file(file)
+                else:
+                    flash('JSON parsing is not implemented', 'warning')
+            else:
+                # Assume text file with one URL per line (no company context)
+                content = file.read().decode('utf-8')
+                urls = [line.strip() for line in content.split('\n') if line.strip()]
+                url_data_list = [{'url': url} for url in urls]
+        else:
+            # Parse URLs from text input
+            urls = [line.strip() for line in urls_input.split('\n') if line.strip()]
+            url_data_list = [{'url': url} for url in urls]
+        
+        # Filter out invalid URLs
+        valid_url_data_list = []
+        for data in url_data_list:
+            if is_valid_url(data.get('url', '')):
+                valid_url_data_list.append(data)
+            else:
+                logger.warning(f"Invalid URL skipped: {data.get('url', '(empty)')}")
+        
+        if not valid_url_data_list:
+            flash('No valid URLs provided.', 'danger')
+            return redirect(url_for('index'))
+        
+        if not prompt_names:
+            flash('Please select at least one prompt configuration.', 'warning')
+            return redirect(url_for('index'))
+        
+        # Generate a job ID manually
+        import uuid
+        job_id = str(uuid.uuid4())
+        
+        # Create a new job with the adjusted parameters
+        job_id = db.create_job(
+            job_id=job_id,
+            name=f"Analysis {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            prompt_names=prompt_names,
+            urls=[data.get('url') for data in valid_url_data_list]
+        )
+        
+        # Ensure we have a valid job_id
+        if not job_id:
+            flash('Failed to create analysis job', 'danger')
+            return redirect(url_for('index'))
+        
+        logger.info(f"Job {job_id} created with force_browser={force_browser}, premium_proxy={premium_proxy}")
+        
+        # Start processing in a background thread WITH PARALLEL PROCESSING
+        thread = threading.Thread(
+            target=process_urls_in_parallel,
+            args=(job_id, valid_url_data_list, prompt_names, force_browser, premium_proxy)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        # Add thread ID to active threads
+        active_threads.add(thread.ident)
+        
+        # Log the job_id for debugging
+        logger.info(f"Redirecting to job status page for job ID: {job_id}")
+        
+        # Redirect to job status page with explicit job_id parameter
+        return redirect(url_for('job_status', job_id=job_id))
+            
+    except Exception as e:
+        logger.error(f"Error starting analysis: {str(e)}")
+        flash(f"Error: {str(e)}", 'danger')
+        return redirect(url_for('index'))
+
+
 def parse_csv_file(file):
     """Parse a CSV file for URLs with company context."""
     import csv
@@ -523,18 +609,13 @@ def parse_csv_file(file):
     url_data_list = []
     content = file.read().decode('utf-8-sig')  # Use utf-8-sig to handle BOM character
     
-    # Log the first few characters to check for BOM
-    logger.info(f"CSV first 20 chars: {repr(content[:20])}")
-    
     # Get reader
     reader = csv.DictReader(StringIO(content))
     
     # Find the URL column - handle BOM character
     url_column = None
-    for header in reader.fieldnames or []:
-        if header is None:
-            continue
-        if header.strip('\ufeff').lower() == 'url':  # Strip BOM character and case-insensitive
+    for header in reader.fieldnames:
+        if header.strip('\ufeff') == 'url':  # Strip BOM character
             url_column = header
             break
     
@@ -572,7 +653,7 @@ def parse_csv_file(file):
                 # Look for the field name with potential BOM
                 actual_field = None
                 for header in row.keys():
-                    if header and header.strip('\ufeff').lower() == csv_field.lower():
+                    if header.strip('\ufeff') == csv_field:
                         actual_field = header
                         break
                 
@@ -597,7 +678,7 @@ def parse_csv_file(file):
             # Add content type if available
             content_type_col = None
             for header in row.keys():
-                if header and header.strip('\ufeff').lower() == 'content_type':
+                if header.strip('\ufeff') == 'content_type':
                     content_type_col = header
                     break
                     
@@ -607,7 +688,7 @@ def parse_csv_file(file):
             # Add browser flag if available
             force_browser_col = None
             for header in row.keys():
-                if header and header.strip('\ufeff').lower() == 'force_browser':
+                if header.strip('\ufeff') == 'force_browser':
                     force_browser_col = header
                     break
                     
@@ -618,6 +699,8 @@ def parse_csv_file(file):
     
     logger.info(f"Parsed {row_count} rows from CSV with BOM-aware parsing, found {len(url_data_list)} URLs")
     return url_data_list
+
+
 
 
 def get_status_description(status):
@@ -631,127 +714,6 @@ def get_status_description(status):
         'cancelled': 'Job was cancelled.'
     }
     return descriptions.get(status, f"Status: {status}")
-
-
-
-@app.route('/analyze', methods=['POST'])
-def analyze():
-    """
-    Handle form submission for URL analysis.
-    """
-    try:
-        # Get form data
-        urls_input = request.form.get('urls', '').strip()
-        prompt_names = request.form.getlist('prompts')
-        default_content_type = request.form.get('default_content_type', 'auto')
-        
-        # Initialize url_data_list
-        url_data_list = []
-        
-        # Check input file first (prioritize file over text input)
-        if 'file' in request.files and request.files['file'].filename:
-            file = request.files['file']
-            
-            # Check file extension
-            if file.filename.endswith('.csv'):
-                # Parse CSV file for URLs with company context
-                url_data_list = parse_csv_file(file)
-            elif file.filename.endswith(('.xlsx', '.xls')):
-                # Parse Excel file for URLs with company context
-                if 'parse_excel_file' in globals():
-                    url_data_list = parse_excel_file(file)
-                else:
-                    flash('Excel parsing is not implemented', 'warning')
-            elif file.filename.endswith('.json'):
-                # Parse JSON file for URLs with company context
-                if 'parse_json_file' in globals():
-                    url_data_list = parse_json_file(file)
-                else:
-                    flash('JSON parsing is not implemented', 'warning')
-            else:
-                # Assume text file with one URL per line (no company context)
-                content = file.read().decode('utf-8')
-                urls = [line.strip() for line in content.split('\n') if line.strip()]
-                url_data_list = []
-                
-                # Apply content type detection to each URL
-                for url in urls:
-                    url_data_list.append({
-                        'url': url,
-                        'content_type': detect_content_type(url, default_content_type)
-                    })
-        else:
-            # Parse URLs from text input
-            urls = [line.strip() for line in urls_input.split('\n') if line.strip()]
-            url_data_list = []
-            
-            # Apply content type detection to each URL
-            for url in urls:
-                url_data_list.append({
-                    'url': url,
-                    'content_type': detect_content_type(url, default_content_type)
-                })
-        
-        # Filter out invalid URLs and ensure content types
-        valid_url_data_list = []
-        for data in url_data_list:
-            if is_valid_url(data.get('url', '')):
-                # Make sure every URL has a content_type
-                if 'content_type' not in data or not data['content_type']:
-                    data['content_type'] = detect_content_type(data['url'], default_content_type)
-                valid_url_data_list.append(data)
-        
-        if not valid_url_data_list:
-            flash('No valid URLs provided.', 'danger')
-            return redirect(url_for('index'))
-        
-        if not prompt_names:
-            flash('Please select at least one prompt configuration.', 'warning')
-            return redirect(url_for('index'))
-        
-        # Get company info (if provided)
-        company_info = request.form.get('company_info', None)
-        if company_info:
-            try:
-                company_info = json.loads(company_info)
-            except:
-                company_info = None
-        
-        # Create a new job
-        job_id = db.create_job(
-            urls=[data.get('url') for data in valid_url_data_list],
-            prompts=prompt_names,
-            name=f"Analysis {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        )
-        
-        # CRITICAL FIX: Verify job_id was created properly
-        if not job_id:
-            logger.error("Failed to create job - no job_id returned")
-            flash("Failed to create analysis job", 'danger')
-            return redirect(url_for('index'))
-        
-        logger.info(f"Created job with ID: {job_id}")
-        
-        # Start processing in a background thread
-        thread = threading.Thread(
-            target=process_urls_in_background,
-            args=(job_id, valid_url_data_list, prompt_names, company_info)
-        )
-        thread.daemon = True
-        thread.start()
-        
-        # Add thread ID to active threads
-        active_threads.add(thread.ident)
-        
-        # Redirect to job status page with job_id
-        return redirect(url_for('job_status', job_id=job_id))
-            
-    except Exception as e:
-        logger.error(f"Error starting analysis: {str(e)}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        flash(f"Error: {str(e)}", 'danger')
-        return redirect(url_for('index'))
 
 
 @app.route('/job/<string:job_id>')
@@ -831,27 +793,6 @@ def api_job_status(job_id):
     # Get metrics
     metrics = db.get_job_metrics(job_id)
     
-    # If job status is "pending" but processing has started, update to "running"
-    if job.get('status') == 'pending' and job.get('processed_urls', 0) > 0:
-        db.update_job_status(
-            job_id=job_id,
-            status='running'
-        )
-        job['status'] = 'running'
-    
-    # If job status is "running" but all URLs have been processed, update to "completed"
-    if job.get('status') == 'running' and job.get('processed_urls') == job.get('total_urls'):
-        final_status = 'completed'
-        if metrics.get('failed_results', 0) > 0:
-            final_status = 'completed_with_errors'
-            
-        db.update_job_status(
-            job_id=job_id,
-            status=final_status,
-            completed_at=datetime.now().isoformat()
-        )
-        job['status'] = final_status
-    
     return jsonify({
         'job': job,
         'metrics': metrics
@@ -917,44 +858,56 @@ def delete_job(job_id):
 @app.route('/job/<job_id>/export')
 def export_job(job_id):
     """Export job results."""
-    # Get job details
-    job = db.get_job(job_id)
+    try:
+        # Get job details
+        job = db.get_job(job_id)
+        
+        if not job:
+            flash("Job not found", "error")
+            return redirect(url_for('index'))
+        
+        # Get export format
+        export_format = request.args.get('format', 'csv')
+        
+        if export_format == 'csv':
+            # Export to CSV
+            csv_path = db.export_results_to_csv(job_id)
+            
+            if not csv_path:
+                flash("Error generating CSV export", "danger")
+                return redirect(url_for('job_status', job_id=job_id))
+            
+            logger.info(f"Sending CSV file from {csv_path}")
+            return send_file(
+                csv_path,
+                mimetype='text/csv',
+                as_attachment=True,
+                download_name=f"results_{job_id}.csv"
+            )
+        elif export_format == 'excel':
+            # Export to Excel
+            excel_path = db.export_results_to_excel(job_id)
+            
+            if not excel_path:
+                flash("Error generating Excel export", "danger")
+                return redirect(url_for('job_status', job_id=job_id))
+            
+            logger.info(f"Sending Excel file from {excel_path}")
+            return send_file(
+                excel_path,
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                as_attachment=True,
+                download_name=f"results_{job_id}.xlsx"
+            )
+        else:
+            flash("Invalid export format", "warning")
+            return redirect(url_for('job_status', job_id=job_id))
+    except Exception as e:
+        logger.error(f"Export error: {str(e)}")
+        flash(f"Export failed: {str(e)}", "danger")
+        return redirect(url_for('job_status', job_id=job_id))
     
-    if not job:
-        return render_template('error.html', error="Job not found"), 404
     
-    # Get export format
-    export_format = request.args.get('format', 'csv')
-    
-    if export_format == 'csv':
-        # Export to CSV
-        csv_path = db.export_results_to_csv(job_id)
-        
-        if not csv_path:
-            return render_template('error.html', error="Export failed"), 500
-        
-        return send_file(
-            csv_path,
-            mimetype='text/csv',
-            as_attachment=True,
-            download_name=f"results_{job_id}.csv"
-        )
-    elif export_format == 'excel':
-        # Export to Excel
-        excel_path = db.export_results_to_excel(job_id)
-        
-        if not excel_path:
-            return render_template('error.html', error="Export failed"), 500
-        
-        return send_file(
-            excel_path,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            as_attachment=True,
-            download_name=f"results_{job_id}.xlsx"
-        )
-    else:
-        return render_template('error.html', error="Invalid export format"), 400
-
 @app.route('/prompts')
 def list_prompts():
     """List all available prompts."""
@@ -1035,40 +988,132 @@ os.makedirs(os.path.join(os.path.dirname(__file__), 'templates'), exist_ok=True)
 os.makedirs(os.path.join(os.path.dirname(__file__), 'static'), exist_ok=True)
 
 def is_valid_url(url):
-    """
-    Check if a string is a valid URL.
-    
-    Args:
-        url: String to check
-        
-    Returns:
-        True if valid URL, False otherwise
-    """
+    """Check if a string is a valid URL."""
     import re
+    import logging
+    
+    logger = logging.getLogger("app")
+    
     if not url or not isinstance(url, str):
         return False
+    
+    # Remove any whitespace
+    url = url.strip()
+    
+    # Add http:// prefix if missing
+    if not url.startswith(('http://', 'https://')):
+        url = f"https://{url}"
         
+    # Common URL validation pattern
     pattern = re.compile(
         r'^(?:http|ftp)s?://'  # http:// or https://
-        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'  # domain...
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'  # domain
         r'localhost|'  # localhost...
         r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or IP
         r'(?::\d+)?'  # optional port
-        r'(?:/?|[/?]\S+)?$', re.IGNORECASE)  # path
+        r'(?:/?|[/?]\S+)?$', re.IGNORECASE)  # optional path
     
-    return bool(re.match(pattern, url))
+    is_valid = bool(re.match(pattern, url))
+    
+    if not is_valid:
+        logger.info(f"URL validation failed: {url}")
+    
+    return is_valid
 
-def get_status_description(status):
-    """Get a human-readable description for a job status."""
-    descriptions = {
-        'pending': 'Job is waiting to be processed.',
-        'running': 'Job is currently being processed.',
-        'completed': 'Job completed successfully.',
-        'completed_with_errors': 'Job completed but encountered some errors.',
-        'failed': 'Job failed to complete.',
-        'cancelled': 'Job was cancelled.'
-    }
-    return descriptions.get(status, f"Status: {status}")
+@app.route('/debug-csv')
+def debug_csv_page():
+    return render_template('debug.html')
+
+@app.route('/api/debug/parse-csv', methods=['POST'])
+def debug_parse_csv():
+    """Debug endpoint to test CSV parsing."""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file part'}), 400
+            
+        file = request.files['file']
+        
+        if file.filename == '':
+            return jsonify({'error': 'No selected file'}), 400
+            
+        if not file.filename.endswith('.csv'):
+            return jsonify({'error': 'File must be a CSV'}), 400
+        
+        # Parse CSV using the same function as the analyze endpoint
+        url_data_list = parse_csv_file(file)
+        
+        # Check for valid URLs
+        valid_urls = []
+        invalid_urls = []
+        
+        for data in url_data_list:
+            url = data.get('url', '')
+            if is_valid_url(url):
+                valid_urls.append(data)
+            else:
+                invalid_urls.append(url)
+        
+        return jsonify({
+            'total_rows': len(url_data_list),
+            'valid_urls': len(valid_urls),
+            'invalid_urls': len(invalid_urls),
+            'invalid_url_examples': invalid_urls[:5],
+            'first_valid_data': valid_urls[0] if valid_urls else None
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/debug/csv-upload', methods=['POST'])
+def debug_csv_upload():
+    """Debug endpoint for CSV upload issues."""
+    try:
+        import logging
+        logger = logging.getLogger("app")
+        
+        if 'file' not in request.files:
+            return jsonify({"error": "No file part"}), 400
+        
+        file = request.files['file']
+        
+        # Read and parse CSV
+        content = file.read().decode('utf-8')
+        file.seek(0)  # Rewind file
+        
+        # Get CSV headers
+        import csv
+        from io import StringIO
+        reader = csv.DictReader(StringIO(content))
+        headers = reader.fieldnames
+        
+        # Parse again to get URLs
+        file.seek(0)
+        url_data_list = parse_csv_file(file)
+        
+        # Validate each URL and collect results
+        validation_results = []
+        for item in url_data_list:
+            url = item.get('url', '')
+            is_valid = is_valid_url(url)
+            validation_results.append({
+                'url': url, 
+                'valid': is_valid
+            })
+        
+        # Return debug info
+        return jsonify({
+            "success": True,
+            "csv_headers": headers,
+            "csv_preview": content[:500],
+            "parsed_urls": len(url_data_list),
+            "validation_results": validation_results,
+            "first_url_data": url_data_list[0] if url_data_list else None
+        })
+    except Exception as e:
+        logger.exception("Error in debug endpoint")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
 if __name__ == '__main__':
@@ -1078,3 +1123,4 @@ if __name__ == '__main__':
     
     logger.info(f"Starting Flask app on port {port} (debug={debug})")
     app.run(host='0.0.0.0', port=port, debug=debug)
+
