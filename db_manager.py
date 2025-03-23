@@ -794,60 +794,68 @@ class DatabaseManager:
             all_fields = set(['url', 'status', 'title', 'word_count', 'processed_at', 
                              'content_type', 'prompt_name', 'api_tokens', 'error'])
             
+            # Helper function to extract structured data from analysis text
+            def extract_structured_fields(analysis_text):
+                fields = {}
+                if not analysis_text:
+                    return fields
+                    
+                # Process line by line
+                for line in analysis_text.split('\n'):
+                    if '|||' in line:
+                        parts = line.split('|||', 1)  # Split only on first occurrence
+                        if len(parts) == 2:
+                            field_name = parts[0].strip()
+                            field_value = parts[1].strip()
+                            if field_name and field_value:
+                                fields[field_name] = field_value
+                return fields
+                
             # First pass: collect all field names from the structured data
             for result in results:
+                # First check for direct structured fields in the result (top level)
+                for key in result.keys():
+                    if key not in all_fields and key != 'data':
+                        all_fields.add(key)
+                
+                # Then check in the data object
                 if 'data' in result and result['data']:
-                    try:
-                        # CRITICAL SECTION: Handle double-JSON encoding
-                        data_str = result['data']
-                        
-                        # Use this approach to handle the double encoding:
+                    data_obj = None
+                    
+                    # Try to parse the data - could be string or already parsed
+                    if isinstance(result['data'], str):
                         try:
-                            # First try direct parsing - it could be a JSON string or object
-                            if isinstance(data_str, str):
-                                outer_json = json.loads(data_str)
-                            else:
-                                outer_json = data_str
-                                
-                            # If the result is STILL a string, it means double-encoded JSON
-                            if isinstance(outer_json, str):
-                                data_obj = json.loads(outer_json)
-                            else:
-                                data_obj = outer_json
+                            data_obj = json.loads(result['data'])
                         except json.JSONDecodeError:
-                            # If any parsing fails, log and continue
-                            logger.error("Failed to parse JSON data")
+                            logger.warning(f"Could not parse data JSON for result")
                             continue
+                    else:
+                        data_obj = result['data']
                         
-                        # Now extract fields from the analysis text which contains the ||| delimiter
-                        if isinstance(data_obj, dict) and 'analysis_results' in data_obj:
-                            for prompt_name, analysis in data_obj['analysis_results'].items():
-                                if isinstance(analysis, dict) and 'analysis' in analysis:
-                                    analysis_text = analysis['analysis']
-                                    
-                                    # Process the analysis text line by line
-                                    for line in analysis_text.split('\n'):
-                                        if '|||' in line:
-                                            parts = line.split('|||')
-                                            if len(parts) == 2:
-                                                field_name = parts[0].strip()
-                                                all_fields.add(field_name)
-                        
-                        # Also check structured_data if present
-                        if isinstance(data_obj, dict) and 'structured_data' in data_obj:
-                            for prompt_name, fields in data_obj['structured_data'].items():
-                                if isinstance(fields, dict):
-                                    for field_name in fields:
-                                        all_fields.add(field_name)
-                                        
-                        # Also look for parsed_fields
-                        if isinstance(data_obj, dict) and 'analysis_results' in data_obj:
-                            for prompt_name, analysis in data_obj['analysis_results'].items():
-                                if isinstance(analysis, dict) and 'parsed_fields' in analysis:
+                    if not isinstance(data_obj, dict):
+                        continue
+                    
+                    # Look for structured_data
+                    if 'structured_data' in data_obj and isinstance(data_obj['structured_data'], dict):
+                        for prompt_name, fields in data_obj['structured_data'].items():
+                            if isinstance(fields, dict):
+                                for field_name in fields:
+                                    all_fields.add(field_name)
+                    
+                    # Process analysis results for fields
+                    if 'analysis_results' in data_obj and isinstance(data_obj['analysis_results'], dict):
+                        for prompt_name, analysis in data_obj['analysis_results'].items():
+                            if isinstance(analysis, dict):
+                                # Check for direct structured data
+                                if 'parsed_fields' in analysis and isinstance(analysis['parsed_fields'], dict):
                                     for field_name in analysis['parsed_fields']:
                                         all_fields.add(field_name)
-                    except Exception as e:
-                        logger.error(f"Error collecting field names: {str(e)}")
+                                        
+                                # Process the analysis text for ||| delimited fields
+                                if 'analysis' in analysis and analysis['analysis']:
+                                    structured_fields = extract_structured_fields(analysis['analysis'])
+                                    for field_name in structured_fields:
+                                        all_fields.add(field_name)
             
             # Log found field count
             logger.info(f"Found {len(all_fields)} total fields to export")
@@ -871,76 +879,86 @@ class DatabaseManager:
                         else:
                             row[field] = result[field]
                 
-                # Now extract structured data from the double-encoded JSON
+                # Add top-level fields (direct structured fields)
+                for key in result.keys():
+                    if key in all_fields and key not in ['url', 'status', 'title', 'word_count', 'processed_at', 
+                                                        'content_type', 'prompt_name', 'api_tokens', 'error', 'data']:
+                        row[key] = result[key]
+                
+                # Now extract structured data from data object
                 if 'data' in result and result['data']:
-                    try:
-                        # Handle double-JSON encoding
-                        data_str = result['data']
-                        
-                        # Parse the double-encoded JSON
+                    data_obj = None
+                    
+                    # Parse the data object
+                    if isinstance(result['data'], str):
                         try:
-                            # First parse
-                            if isinstance(data_str, str):
-                                outer_json = json.loads(data_str)
-                            else:
-                                outer_json = data_str
-                                
-                            # Second parse if needed
-                            if isinstance(outer_json, str):
-                                data_obj = json.loads(outer_json)
-                            else:
-                                data_obj = outer_json
+                            data_obj = json.loads(result['data'])
                         except json.JSONDecodeError:
-                            # Skip this result if parsing fails
-                            logger.error("Failed to parse JSON data for a result")
-                            rows.append(row)
                             continue
-                        
-                        # Extract fields from analysis_results directly
-                        if isinstance(data_obj, dict) and 'analysis_results' in data_obj:
-                            for prompt_name, analysis in data_obj['analysis_results'].items():
-                                # Handle direct fields in the analysis object
-                                if isinstance(analysis, dict):
-                                    # Extract from the raw analysis text
-                                    if 'analysis' in analysis:
-                                        analysis_text = analysis['analysis']
-                                        for line in analysis_text.split('\n'):
-                                            if '|||' in line:
-                                                parts = line.split('|||')
-                                                if len(parts) == 2:
-                                                    field_name = parts[0].strip()
-                                                    field_value = parts[1].strip()
-                                                    row[field_name] = field_value
-                                    
-                                    # Also check parsed_fields
-                                    if 'parsed_fields' in analysis and isinstance(analysis['parsed_fields'], dict):
-                                        for field_name, value in analysis['parsed_fields'].items():
-                                            if isinstance(value, list):
-                                                row[field_name] = ', '.join(str(v) for v in value if v is not None)
-                                            else:
-                                                row[field_name] = value
-                        
-                        # Also check structured_data if present
-                        if isinstance(data_obj, dict) and 'structured_data' in data_obj:
-                            for prompt_name, fields in data_obj['structured_data'].items():
-                                if isinstance(fields, dict):
-                                    for field_name, value in fields.items():
+                    else:
+                        data_obj = result['data']
+                    
+                    if not isinstance(data_obj, dict):
+                        continue
+                    
+                    # Extract from structured_data
+                    if 'structured_data' in data_obj and isinstance(data_obj['structured_data'], dict):
+                        for prompt_name, fields in data_obj['structured_data'].items():
+                            if isinstance(fields, dict):
+                                for field_name, value in fields.items():
+                                    if field_name in all_fields:
                                         if isinstance(value, list):
                                             row[field_name] = ', '.join(str(v) for v in value if v is not None)
                                         else:
                                             row[field_name] = value
-                                        
-                    except Exception as e:
-                        logger.error(f"Error extracting data values: {str(e)}")
+                    
+                    # Extract from analysis results
+                    if 'analysis_results' in data_obj and isinstance(data_obj['analysis_results'], dict):
+                        for prompt_name, analysis in data_obj['analysis_results'].items():
+                            if isinstance(analysis, dict):
+                                # Extract from parsed_fields
+                                if 'parsed_fields' in analysis and isinstance(analysis['parsed_fields'], dict):
+                                    for field_name, value in analysis['parsed_fields'].items():
+                                        if field_name in all_fields:
+                                            if isinstance(value, list):
+                                                row[field_name] = ', '.join(str(v) for v in value if v is not None)
+                                            else:
+                                                row[field_name] = value
+                                
+                                # Extract from analysis text with ||| delimiter
+                                if 'analysis' in analysis and analysis['analysis']:
+                                    structured_fields = extract_structured_fields(analysis['analysis'])
+                                    for field_name, value in structured_fields.items():
+                                        if field_name in all_fields:
+                                            row[field_name] = value
                 
                 # Add the row to our results
                 rows.append(row)
             
-            # Write to CSV file
+            # Find fields with actual values (skip empty fields)
+            non_empty_fields = set()
+            for row in rows:
+                for field, value in row.items():
+                    if value not in ('', None):
+                        non_empty_fields.add(field)
+            
+            # Always include standard fields
+            for field in ['url', 'status', 'title', 'word_count', 'processed_at', 
+                         'content_type', 'prompt_name', 'api_tokens', 'error']:
+                non_empty_fields.add(field)
+                
+            # Sort fields alphabetically
+            sorted_fields = sorted(list(non_empty_fields))
+                
+            # Write to CSV file, but only include fields that have values
             with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
-                writer = csv.DictWriter(f, fieldnames=sorted(all_fields))
+                writer = csv.DictWriter(f, fieldnames=sorted_fields)
                 writer.writeheader()
-                writer.writerows(rows)
+                
+                # Write only the fields with values
+                for row in rows:
+                    filtered_row = {k: row[k] for k in sorted_fields}
+                    writer.writerow(filtered_row)
             
             logger.info(f"Successfully exported to CSV: {csv_path}")
             return csv_path
