@@ -44,6 +44,38 @@ job_queue = {}
 active_threads = set()
 
 
+def detect_content_type(url: str, default_type: str = "auto") -> str:
+    """
+    Detect content type from URL extension or return default.
+    
+    Args:
+        url: URL to analyze
+        default_type: Default content type to return if no extension matches
+        
+    Returns:
+        Detected content type (html, pdf, docx, pptx)
+    """
+    url_lower = url.lower()
+    
+    # Check extensions
+    if url_lower.endswith(".pdf"):
+        return "pdf"
+    elif url_lower.endswith(".docx"):
+        return "docx"
+    elif url_lower.endswith(".pptx"):
+        return "pptx"
+    elif url_lower.endswith((".html", ".htm", ".php", ".asp", ".aspx")):
+        return "html"
+        
+    # Check default type
+    if default_type != "auto":
+        return default_type
+        
+    # Default to HTML for any other URL
+    return "html"
+
+
+
 def process_urls_in_parallel(job_id: str, url_data_list: List[Dict[str, Any]], 
                            prompt_names: List[str], force_browser: bool = False, 
                            premium_proxy: bool = False):
@@ -479,107 +511,6 @@ def index():
             page_title="Error"
         )
 
-@app.route('/analyze', methods=['POST'])
-def analyze():
-    """
-    Handle form submission for URL analysis.
-    """
-    try:
-        # Get form data
-        urls_input = request.form.get('urls', '').strip()
-        prompt_names = request.form.getlist('prompts')
-        
-        # Initialize url_data_list
-        url_data_list = []
-        
-        # Check input file first (prioritize file over text input)
-        if 'file' in request.files and request.files['file'].filename:
-            file = request.files['file']
-            
-            # Check file extension
-            if file.filename.endswith('.csv'):
-                # Parse CSV file for URLs with company context
-                url_data_list = parse_csv_file(file)
-            elif file.filename.endswith(('.xlsx', '.xls')):
-                # Parse Excel file for URLs with company context
-                if 'parse_excel_file' in globals():
-                    url_data_list = parse_excel_file(file)
-                else:
-                    flash('Excel parsing is not implemented', 'warning')
-            elif file.filename.endswith('.json'):
-                # Parse JSON file for URLs with company context
-                if 'parse_json_file' in globals():
-                    url_data_list = parse_json_file(file)
-                else:
-                    flash('JSON parsing is not implemented', 'warning')
-            else:
-                # Assume text file with one URL per line (no company context)
-                content = file.read().decode('utf-8')
-                urls = [line.strip() for line in content.split('\n') if line.strip()]
-                url_data_list = [{'url': url} for url in urls]
-        else:
-            # Parse URLs from text input
-            urls = [line.strip() for line in urls_input.split('\n') if line.strip()]
-            url_data_list = [{'url': url} for url in urls]
-        
-        # Filter out invalid URLs
-        valid_url_data_list = []
-        for data in url_data_list:
-            if is_valid_url(data.get('url', '')):
-                valid_url_data_list.append(data)
-        
-        if not valid_url_data_list:
-            flash('No valid URLs provided.', 'danger')
-            return redirect(url_for('index'))
-        
-        if not prompt_names:
-            flash('Please select at least one prompt configuration.', 'warning')
-            return redirect(url_for('index'))
-        
-        # Get company info (if provided)
-        company_info = request.form.get('company_info', None)
-        if company_info:
-            try:
-                company_info = json.loads(company_info)
-            except:
-                company_info = None
-        
-        # Create a new job
-        job_id = db.create_job(
-            urls=[data.get('url') for data in valid_url_data_list],
-            prompts=prompt_names,
-            name=f"Analysis {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        )
-        
-        # CRITICAL FIX: Verify job_id was created properly
-        if not job_id:
-            logger.error("Failed to create job - no job_id returned")
-            flash("Failed to create analysis job", 'danger')
-            return redirect(url_for('index'))
-        
-        logger.info(f"Created job with ID: {job_id}")
-        
-        # Start processing in a background thread
-        thread = threading.Thread(
-            target=process_urls_in_background,
-            args=(job_id, valid_url_data_list, prompt_names, company_info)
-        )
-        thread.daemon = True
-        thread.start()
-        
-        # Add thread ID to active threads
-        active_threads.add(thread.ident)
-        
-        # Redirect to job status page with job_id
-        return redirect(url_for('job_status', job_id=job_id))
-            
-    except Exception as e:
-        logger.error(f"Error starting analysis: {str(e)}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        flash(f"Error: {str(e)}", 'danger')
-        return redirect(url_for('index'))
-
 def parse_csv_file(file):
     """Parse a CSV file for URLs with company context."""
     import csv
@@ -700,6 +631,127 @@ def get_status_description(status):
         'cancelled': 'Job was cancelled.'
     }
     return descriptions.get(status, f"Status: {status}")
+
+
+
+@app.route('/analyze', methods=['POST'])
+def analyze():
+    """
+    Handle form submission for URL analysis.
+    """
+    try:
+        # Get form data
+        urls_input = request.form.get('urls', '').strip()
+        prompt_names = request.form.getlist('prompts')
+        default_content_type = request.form.get('default_content_type', 'auto')
+        
+        # Initialize url_data_list
+        url_data_list = []
+        
+        # Check input file first (prioritize file over text input)
+        if 'file' in request.files and request.files['file'].filename:
+            file = request.files['file']
+            
+            # Check file extension
+            if file.filename.endswith('.csv'):
+                # Parse CSV file for URLs with company context
+                url_data_list = parse_csv_file(file)
+            elif file.filename.endswith(('.xlsx', '.xls')):
+                # Parse Excel file for URLs with company context
+                if 'parse_excel_file' in globals():
+                    url_data_list = parse_excel_file(file)
+                else:
+                    flash('Excel parsing is not implemented', 'warning')
+            elif file.filename.endswith('.json'):
+                # Parse JSON file for URLs with company context
+                if 'parse_json_file' in globals():
+                    url_data_list = parse_json_file(file)
+                else:
+                    flash('JSON parsing is not implemented', 'warning')
+            else:
+                # Assume text file with one URL per line (no company context)
+                content = file.read().decode('utf-8')
+                urls = [line.strip() for line in content.split('\n') if line.strip()]
+                url_data_list = []
+                
+                # Apply content type detection to each URL
+                for url in urls:
+                    url_data_list.append({
+                        'url': url,
+                        'content_type': detect_content_type(url, default_content_type)
+                    })
+        else:
+            # Parse URLs from text input
+            urls = [line.strip() for line in urls_input.split('\n') if line.strip()]
+            url_data_list = []
+            
+            # Apply content type detection to each URL
+            for url in urls:
+                url_data_list.append({
+                    'url': url,
+                    'content_type': detect_content_type(url, default_content_type)
+                })
+        
+        # Filter out invalid URLs and ensure content types
+        valid_url_data_list = []
+        for data in url_data_list:
+            if is_valid_url(data.get('url', '')):
+                # Make sure every URL has a content_type
+                if 'content_type' not in data or not data['content_type']:
+                    data['content_type'] = detect_content_type(data['url'], default_content_type)
+                valid_url_data_list.append(data)
+        
+        if not valid_url_data_list:
+            flash('No valid URLs provided.', 'danger')
+            return redirect(url_for('index'))
+        
+        if not prompt_names:
+            flash('Please select at least one prompt configuration.', 'warning')
+            return redirect(url_for('index'))
+        
+        # Get company info (if provided)
+        company_info = request.form.get('company_info', None)
+        if company_info:
+            try:
+                company_info = json.loads(company_info)
+            except:
+                company_info = None
+        
+        # Create a new job
+        job_id = db.create_job(
+            urls=[data.get('url') for data in valid_url_data_list],
+            prompts=prompt_names,
+            name=f"Analysis {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        )
+        
+        # CRITICAL FIX: Verify job_id was created properly
+        if not job_id:
+            logger.error("Failed to create job - no job_id returned")
+            flash("Failed to create analysis job", 'danger')
+            return redirect(url_for('index'))
+        
+        logger.info(f"Created job with ID: {job_id}")
+        
+        # Start processing in a background thread
+        thread = threading.Thread(
+            target=process_urls_in_background,
+            args=(job_id, valid_url_data_list, prompt_names, company_info)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        # Add thread ID to active threads
+        active_threads.add(thread.ident)
+        
+        # Redirect to job status page with job_id
+        return redirect(url_for('job_status', job_id=job_id))
+            
+    except Exception as e:
+        logger.error(f"Error starting analysis: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        flash(f"Error: {str(e)}", 'danger')
+        return redirect(url_for('index'))
 
 
 @app.route('/job/<string:job_id>')

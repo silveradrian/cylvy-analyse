@@ -1,31 +1,36 @@
 from __future__ import annotations  # This must be the first import!
 
+# Standard library imports
 import asyncio
-import logging
-import async_timeout
-import time
-from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime
-import os
-import threading
-from bs4 import BeautifulSoup
 import json
+import logging
+import os
+import re
+import tempfile
+import threading
+import time
+import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import aiohttp
-import async_timeout
+from datetime import datetime
+from typing import Dict, List, Any, Optional, Tuple
+from urllib.parse import urlparse
 
 # Third-party imports
-from openai import OpenAI, AsyncOpenAI
-import tiktoken
-from scrapingbee import ScrapingBeeClient
+import aiohttp
+import async_timeout
+from aiolimiter import AsyncLimiter
+from bs4 import BeautifulSoup
 from limits import RateLimitItem, storage
 from limits.strategies import FixedWindowRateLimiter
 from limits.aio.strategies import FixedWindowRateLimiter as AsyncFixedWindowRateLimiter
-from aiolimiter import AsyncLimiter
+from openai import OpenAI, AsyncOpenAI
+import PyPDF2
+from scrapingbee import ScrapingBeeClient
+import tiktoken
 
 # Internal imports
-from prompt_loader import PromptLoader
 from db_manager import DatabaseManager
+from prompt_loader import PromptLoader
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -154,26 +159,443 @@ class ContentAnalyzer:
             self.async_scrapingbee_rate_limiter = AsyncAdvancedRateLimiter(50)
     
 
-    async def scrape_url_async(self, url: str, content_type: str = "html", 
-                    force_browser: bool = False, retry_attempt: int = 0) -> Dict[str, Any]:
+
+    async def extract_document_async(self, url: str, content_type: str) -> Dict[str, Any]:
         """
-        Asynchronously scrape content from a URL using ScrapingBee's API.
-        Includes automatic retry with enhanced options on failure.
+        Extract text from documents (PDF, DOCX, PPTX) by downloading and processing them.
+        
+        Args:
+            url: URL to the document
+            content_type: The type of document ("pdf", "docx", "pptx")
+            
+        Returns:
+            Dictionary containing extraction results
+        """
+        import tempfile
+        import os
+        import re
+        from urllib.parse import urlparse
+        
+        start_time = time.time()
+        
+        # Function to get a filename from URL or headers
+        def get_filename_from_url(url, content_disposition=None):
+            if content_disposition:
+                filename_match = re.findall('filename="(.+)"', content_disposition)
+                if filename_match:
+                    return filename_match[0]
+                    
+            # Fallback to URL parsing
+            path = urlparse(url).path
+            filename = os.path.basename(path)
+            return filename if filename else f"document.{content_type}"
+        
+        logger.info(f"Downloading {content_type.upper()} document: {url}")
+        
+        try:
+            # Random user agent
+            user_agents = [
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0'
+            ]
+            headers = {'User-Agent': random.choice(user_agents)}
+            
+            # Download the file with timeout (60 seconds)
+            response = requests.get(url, headers=headers, timeout=60, stream=True)
+            response.raise_for_status()
+            
+            # Get content disposition for filename
+            content_disposition = response.headers.get('Content-Disposition', '')
+            filename = get_filename_from_url(url, content_disposition)
+            
+            # Create a temporary file with the appropriate extension
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{content_type}') as temp_file:
+                # Download in chunks
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        temp_file.write(chunk)
+                        
+                temp_path = temp_file.name
+                
+            try:
+                # Process based on content type
+                if content_type == 'pdf':
+                    result = self.extract_from_pdf(temp_path)
+                elif content_type == 'docx':
+                    result = self.extract_from_docx(temp_path)
+                elif content_type == 'pptx':
+                    result = self.extract_from_pptx(temp_path)
+                else:
+                    raise ValueError(f"Unsupported document type: {content_type}")
+                    
+                # Add URL and processing time
+                result["url"] = url
+                result["scrape_time"] = time.time() - start_time
+                
+                # If no title was extracted but we have a filename, use it as title
+                if not result.get("title") and filename:
+                    # Clean up filename to use as title (remove extension, replace underscores)
+                    clean_title = os.path.splitext(filename)[0].replace('_', ' ').replace('-', ' ')
+                    result["title"] = clean_title
+                    
+                return result
+                
+            finally:
+                # Clean up the temporary file
+                try:
+                    os.unlink(temp_path)
+                except Exception as e:
+                    logger.warning(f"Could not delete temporary file: {str(e)}")
+                    
+        except Exception as e:
+            logger.error(f"Error extracting document {url}: {str(e)}")
+            return {
+                "url": url,
+                "status": "error",
+                "error": str(e),
+                "scrape_time": time.time() - start_time
+            }
+
+    def extract_from_pdf(self, file_path: str) -> Dict[str, Any]:
+        """
+        Extract text from a PDF file using multiple extraction methods.
+        """
+        result = {
+            "text": "",
+            "title": "",
+            "status": "success",
+            "content_type": "pdf",
+            "method_used": ""
+        }
+        
+        try:
+                      
+            with open(file_path, 'rb') as file:
+                reader = PyPDF2.PdfReader(file)
+                
+                # Extract metadata
+                if reader.metadata:
+                    for key, value in reader.metadata.items():
+                        if key == "/Title" and value:
+                            result["title"] = value
+                
+                # Extract text from all pages
+                all_text = []
+                for i in range(len(reader.pages)):
+                    page = reader.pages[i]
+                    text = page.extract_text()
+                    if text:
+                        all_text.append(text)
+                
+                result["text"] = "\n\n".join(all_text)
+                result["word_count"] = len(result["text"].split())
+                result["method_used"] = "PyPDF2"
+                
+            # If PyPDF2 didn't extract enough text, try other libraries
+            if result["word_count"] < 100:
+                try:
+                    # Try PyMuPDF (fitz) if available
+                    import fitz
+                    doc = fitz.open(file_path)
+                    
+                    # Extract metadata
+                    if doc.metadata and "title" in doc.metadata and doc.metadata["title"]:
+                        result["title"] = doc.metadata["title"]
+                    
+                    # Extract text
+                    all_text = []
+                    for page_num in range(len(doc)):
+                        page = doc[page_num]
+                        text = page.get_text()
+                        all_text.append(text)
+                    
+                    pymupdf_text = "\n\n".join(all_text)
+                    pymupdf_word_count = len(pymupdf_text.split())
+                    
+                    # Only use if it extracted more text
+                    if pymupdf_word_count > result["word_count"]:
+                        result["text"] = pymupdf_text
+                        result["word_count"] = pymupdf_word_count
+                        result["method_used"] = "PyMuPDF"
+                    
+                except ImportError:
+                    logger.info("PyMuPDF not available for PDF extraction")
+        
+        except ImportError:
+            result["status"] = "error"
+            result["error"] = "PDF extraction libraries not available"
+        except Exception as e:
+            result["status"] = "error"
+            result["error"] = f"PDF extraction failed: {str(e)}"
+        
+        # If no text was extracted, mark as error
+        if not result["text"]:
+            result["status"] = "error" if "error" not in result else result["status"]
+            result["error"] = result.get("error", "Failed to extract text from PDF")
+        
+        return result
+
+    def extract_from_docx(self, file_path: str) -> Dict[str, Any]:
+        """
+        Extract text from a Word document (.docx file).
+        """
+        result = {
+            "text": "",
+            "title": "",
+            "status": "success",
+            "content_type": "docx",
+            "method_used": "python-docx"
+        }
+        
+        try:
+            from docx import Document
+            
+            # Open the document
+            doc = Document(file_path)
+            
+            # Extract title from document properties
+            if hasattr(doc, "core_properties"):
+                if doc.core_properties.title:
+                    result["title"] = doc.core_properties.title
+            
+            # If no title found, use the first paragraph if it's short enough
+            if not result["title"] and doc.paragraphs:
+                first_para = doc.paragraphs[0].text.strip()
+                if first_para and len(first_para) < 200:
+                    result["title"] = first_para
+            
+            # Extract all text
+            paragraphs = []
+            for paragraph in doc.paragraphs:
+                text = paragraph.text.strip()
+                if text:
+                    paragraphs.append(text)
+            
+            # Join paragraphs with newlines
+            result["text"] = "\n\n".join(paragraphs)
+            result["word_count"] = len(result["text"].split())
+            
+        except ImportError:
+            result["status"] = "error"
+            result["error"] = "python-docx package not installed"
+        except Exception as e:
+            result["status"] = "error"
+            result["error"] = f"DOCX extraction failed: {str(e)}"
+        
+        return result
+
+    def extract_from_pptx(self, file_path: str) -> Dict[str, Any]:
+        """
+        Extract text from a PowerPoint document (.pptx file).
+        """
+        result = {
+            "text": "",
+            "title": "",
+            "status": "success",
+            "content_type": "pptx",
+            "method_used": "python-pptx"
+        }
+        
+        try:
+            from pptx import Presentation
+            
+            # Open the presentation
+            prs = Presentation(file_path)
+            
+            # Try to get title from core properties
+            if hasattr(prs, "core_properties") and prs.core_properties.title:
+                result["title"] = prs.core_properties.title
+            
+            # If no title found, use title from first slide if available
+            if not result["title"] and len(prs.slides) > 0:
+                first_slide = prs.slides[0]
+                for shape in first_slide.shapes:
+                    if hasattr(shape, "has_text_frame") and shape.has_text_frame:
+                        text = shape.text.strip()
+                        if text and len(text) < 200:
+                            result["title"] = text
+                            break
+            
+            # Extract text from all slides
+            all_text = []
+            
+            for i, slide in enumerate(prs.slides):
+                slide_text = []
+                slide_text.append(f"Slide {i+1}")
+                
+                for shape in slide.shapes:
+                    if hasattr(shape, "has_text_frame") and shape.has_text_frame:
+                        text = shape.text.strip()
+                        if text:
+                            slide_text.append(text)
+                
+                if slide_text:
+                    all_text.append("\n".join(slide_text))
+            
+            result["text"] = "\n\n".join(all_text)
+            result["word_count"] = len(result["text"].split())
+            
+        except ImportError:
+            result["status"] = "error"
+            result["error"] = "python-pptx package not installed"
+        except Exception as e:
+            result["status"] = "error"
+            result["error"] = f"PPTX extraction failed: {str(e)}"
+        
+        return result
+
+
+
+    async def scrape_url_async(self, url: str, content_type: str = "html", 
+                    force_browser: bool = False, retry_attempt: int = 0, 
+                    timeout: int = 100) -> Dict[str, Any]:
+        """
+        Asynchronously scrape content from a URL using ScrapingBee's API or document extraction methods.
+        Includes automatic retry with enhanced options on failure and request timeout.
+
+        Args:
+            url: URL to scrape
+            content_type: Expected content type (html, pdf, docx, pptx, or auto)
+            force_browser: Whether to force browser rendering for HTML
+            retry_attempt: Current retry attempt number
+            timeout: Timeout in seconds for the API request (default: 100)
+            
+        Returns:
+            Dictionary containing scraping results
         """
         # Make sure we import re for text normalization
         import re
-        
+        import tempfile
+        import os
+        import requests  # Add this import for document downloads
+        from urllib.parse import urlparse
+
         try:
-            logger.info(f"Async scraping URL with ScrapingBee: {url}{' (retry attempt '+str(retry_attempt)+')' if retry_attempt > 0 else ''}")
+            # Check if the URL is a document by extension or content_type
+            url_lower = url.lower()
+            detected_type = content_type.lower()
             
-            # Only handle HTML for now
-            if content_type.lower() != 'html':
-                logger.warning(f"Skipping non-HTML content type: {content_type}")
-                return {
-                    "error": f"Only HTML content is currently supported",
-                    "url": url,
-                    "status": "error"
-                }
+            # Auto-detect content type from URL extension
+            if detected_type == "html" or detected_type == "auto":
+                if url_lower.endswith(".pdf"):
+                    detected_type = "pdf"
+                    logger.info(f"Auto-detected PDF document: {url}")
+                elif url_lower.endswith(".docx"):
+                    detected_type = "docx"
+                    logger.info(f"Auto-detected Word document: {url}")
+                elif url_lower.endswith(".pptx"):
+                    detected_type = "pptx"
+                    logger.info(f"Auto-detected PowerPoint document: {url}")
+                else:
+                    detected_type = "html"  # Default to HTML
+            
+            # Handle document types (PDF, DOCX, PPTX)
+            if detected_type in ["pdf", "docx", "pptx"]:
+                logger.info(f"Processing document URL: {url}, type: {detected_type}")
+                
+                start_time = time.time()
+                
+                try:
+                    # Setup for document download
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                    }
+                    
+                    # Execute the document download with timeout
+                    with ThreadPoolExecutor() as executor:
+                        loop = asyncio.get_event_loop()
+                        
+                        async def download_with_timeout():
+                            try:
+                                async with async_timeout.timeout(timeout):
+                                    return await loop.run_in_executor(
+                                        executor,
+                                        lambda: requests.get(url, headers=headers, timeout=timeout, stream=True)
+                                    )
+                            except asyncio.TimeoutError:
+                                logger.error(f"Timeout after {timeout}s when downloading {url}")
+                                raise TimeoutError(f"Document download timed out after {timeout} seconds")
+                        
+                        try:
+                            response = await download_with_timeout()
+                        except TimeoutError as e:
+                            return {
+                                "error": str(e),
+                                "url": url,
+                                "status": "scrape_error",
+                                "content_type": detected_type,
+                                "retry_attempts": retry_attempt
+                            }
+                    
+                    # Check if download was successful
+                    if response.status_code != 200:
+                        return {
+                            "error": f"Document download failed with status code: {response.status_code}",
+                            "url": url,
+                            "status": "scrape_error",
+                            "content_type": detected_type,
+                            "retry_attempts": retry_attempt
+                        }
+                    
+                    # Create a temporary file with appropriate extension
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{detected_type}") as temp_file:
+                        temp_path = temp_file.name
+                        
+                        # Download the file in chunks
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                temp_file.write(chunk)
+                    
+                    # Process the document based on its type
+                    try:
+                        if detected_type == "pdf":
+                            result = self.extract_from_pdf(temp_path)
+                        elif detected_type == "docx":
+                            result = self.extract_from_docx(temp_path)
+                        elif detected_type == "pptx":
+                            result = self.extract_from_pptx(temp_path)
+                        
+                        # Add common fields
+                        result.update({
+                            "url": url,
+                            "status": "success" if not result.get("error") else "scrape_error",
+                            "content_type": detected_type,
+                            "scrape_time": time.time() - start_time
+                        })
+                        
+                        # If no title was extracted, try to use filename from URL
+                        if not result.get("title"):
+                            path = urlparse(url).path
+                            filename = os.path.basename(path)
+                            if filename:
+                                # Clean up the filename to use as title
+                                clean_title = os.path.splitext(filename)[0].replace('_', ' ').replace('-', ' ')
+                                result["title"] = clean_title
+                        
+                        logger.info(f"Successfully extracted {result.get('word_count', 0)} words from {detected_type.upper()} document: {url}")
+                        return result
+                        
+                    finally:
+                        # Clean up temporary file
+                        try:
+                            if os.path.exists(temp_path):
+                                os.unlink(temp_path)
+                        except Exception as e:
+                            logger.warning(f"Failed to delete temporary file: {str(e)}")
+                
+                except Exception as e:
+                    logger.error(f"Error processing document {url}: {str(e)}")
+                    return {
+                        "error": f"Document processing error: {str(e)}",
+                        "url": url,
+                        "status": "scrape_error",
+                        "content_type": detected_type,
+                        "retry_attempts": retry_attempt
+                    }
+            
+            # Regular HTML scraping with ScrapingBee follows...
+            logger.info(f"Async scraping HTML URL with ScrapingBee: {url}{' (retry attempt '+str(retry_attempt)+')' if retry_attempt > 0 else ''}")
             
             # Reload the API key each time
             scrapingbee_api_key = os.environ.get("SCRAPINGBEE_API_KEY", "")
@@ -206,16 +628,34 @@ class ContentAnalyzer:
                 params["stealth_proxy"] = "true"
                 logger.info(f"Using stealth proxy for final retry attempt on {url}")
             
-            logger.info(f"Scraping {url} with params: {params}")
+            logger.info(f"Scraping {url} with params: {params}, timeout: {timeout}s")
             
             # Use ThreadPoolExecutor since ScrapingBee client is not async
             with ThreadPoolExecutor() as executor:
                 loop = asyncio.get_event_loop()
                 
-                response = await loop.run_in_executor(
-                    executor,
-                    lambda: scrapingbee_client.get(url, params=params)
-                )
+                # Create a function to execute with timeout
+                async def fetch_with_timeout():
+                    try:
+                        # Use async_timeout for the request
+                        async with async_timeout.timeout(timeout):
+                            return await loop.run_in_executor(
+                                executor,
+                                lambda: scrapingbee_client.get(url, params=params)
+                            )
+                    except asyncio.TimeoutError:
+                        logger.error(f"Timeout after {timeout}s when scraping {url}")
+                        raise TimeoutError(f"ScrapingBee request timed out after {timeout} seconds")
+                
+                try:
+                    response = await fetch_with_timeout()
+                except TimeoutError as e:
+                    return {
+                        "error": str(e),
+                        "url": url,
+                        "status": "scrape_error",
+                        "retry_attempts": retry_attempt
+                    }
             
             duration = time.time() - start_time
             
@@ -245,7 +685,7 @@ class ContentAnalyzer:
                     if should_retry:
                         logger.warning(f"Retrying {url} with enhanced options (attempt {retry_attempt+1})")
                         await asyncio.sleep(1 * (retry_attempt + 1))  # Progressive delay
-                        return await self.scrape_url_async(url, content_type, True, retry_attempt + 1)
+                        return await self.scrape_url_async(url, content_type, True, retry_attempt + 1, timeout)
                 
                 # Return the error if we've exhausted retries or enhanced options didn't help
                 return {
@@ -346,7 +786,7 @@ class ContentAnalyzer:
             if word_count < 50 and retry_attempt < 2 and not use_enhanced_options:
                 logger.warning(f"Content for {url} seems too short ({word_count} words). Retrying with enhanced options.")
                 await asyncio.sleep(1)
-                return await self.scrape_url_async(url, content_type, True, retry_attempt + 1)
+                return await self.scrape_url_async(url, content_type, True, retry_attempt + 1, timeout)
             
             result = {
                 "url": url,
@@ -363,6 +803,14 @@ class ContentAnalyzer:
             logger.info(f"Successfully scraped {url} - {result.get('word_count', 0)} words in {duration:.2f}s")
             return result
             
+        except asyncio.TimeoutError:
+            logger.error(f"Async timeout after {timeout}s when scraping {url}")
+            return {
+                "error": f"Request timed out after {timeout} seconds",
+                "url": url,
+                "status": "scrape_error",
+                "retry_attempts": retry_attempt
+            }
         except Exception as e:
             logger.error(f"Error scraping {url}: {str(e)}")
             
@@ -371,7 +819,7 @@ class ContentAnalyzer:
             if retry_attempt < 2 and not force_browser and any(err in str(e).lower() for err in connection_errors):
                 logger.warning(f"Connection error for {url}. Retrying with enhanced options after delay.")
                 await asyncio.sleep(2 * (retry_attempt + 1))  # Progressive delay for connection issues
-                return await self.scrape_url_async(url, content_type, True, retry_attempt + 1)
+                return await self.scrape_url_async(url, content_type, True, retry_attempt + 1, timeout)
                 
             return {
                 "error": str(e),

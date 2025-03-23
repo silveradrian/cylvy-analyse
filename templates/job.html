@@ -267,226 +267,248 @@
     <div class="card-body p-0">
         {% if results %}
         <div class="table-responsive">
-            <table class="table table-hover table-striped mb-0">
-                <thead>
-                    <tr>
-                        <th>URL</th>
-                        <th>Status</th>
-                        <th>Title</th>
-                        <th>Words</th>
-                        <th>Tokens</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for result in results %}
-                    <tr>
-                        <td>
-                            <a href="{{ result.url }}" target="_blank" class="text-truncate d-inline-block" style="max-width: 300px;">
-                                {{ result.url }}
-                            </a>
-                        </td>
-                        <td>
-                            {% if result.status == 'success' %}
-                            <span class="badge bg-success">Success</span>
-                            {% elif result.status == 'scrape_error' %}
-                            <span class="badge bg-danger">Scrape Error</span>
-                            {% elif result.status == 'analysis_error' %}
-                            <span class="badge bg-warning text-dark">Analysis Error</span>
-                            {% else %}
-                            <span class="badge bg-secondary">{{ result.status }}</span>
-                            {% endif %}
-                        </td>
-                        <td class="text-truncate" style="max-width: 200px;">{{ result.title }}</td>
-                        <td>{{ result.word_count|default(0) }}</td>
-                        <td>{{ result.api_tokens|default(0) }}</td>
-                        <td>
-                            <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#resultModal{{ loop.index }}">
-                                <i class="bi bi-eye"></i> View
-                            </button>
-                        </td>
-                    </tr>
+    <table class="table table-hover table-striped mb-0">
+        <thead>
+            <tr>
+                <th>URL</th>
+                <th>Status</th>
+                <th>Type</th>
+                <th>Title</th>
+                <th>Words</th>
+                <th>Tokens</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for result in results %}
+            <tr>
+                <td>
+                    <a href="{{ result.url }}" target="_blank" class="text-truncate d-inline-block" style="max-width: 300px;">
+                        {{ result.url }}
+                    </a>
+                </td>
+                <td>
+                    {% if result.status == 'success' %}
+                    <span class="badge bg-success">Success</span>
+                    {% elif result.status == 'scrape_error' %}
+                    <span class="badge bg-danger">Scrape Error</span>
+                    {% elif result.status == 'analysis_error' %}
+                    <span class="badge bg-warning text-dark">Analysis Error</span>
+                    {% else %}
+                    <span class="badge bg-secondary">{{ result.status }}</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if result.content_type == 'pdf' %}
+                    <span class="badge bg-danger">PDF</span>
+                    {% elif result.content_type == 'docx' %}
+                    <span class="badge bg-primary">DOCX</span>
+                    {% elif result.content_type == 'pptx' %}
+                    <span class="badge bg-warning text-dark">PPTX</span>
+                    {% else %}
+                    <span class="badge bg-info text-dark">HTML</span>
+                    {% endif %}
+                </td>
+                <td class="text-truncate" style="max-width: 200px;">{{ result.title }}</td>
+                <td>{{ result.word_count|default(0) }}</td>
+                <td>{{ result.api_tokens|default(0) }}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#resultModal{{ loop.index }}">
+                        <i class="bi bi-eye"></i> View
+                    </button>
+                </td>
+            </tr>
 
-                    <!-- Modal for each result -->
-                    <div class="modal fade" id="resultModal{{ loop.index }}" tabindex="-1" aria-labelledby="resultModalLabel{{ loop.index }}" aria-hidden="true">
-                        <div class="modal-dialog modal-xl modal-dialog-scrollable">
-                            <div class="modal-content">
-                                <div class="modal-header">
-                                    <h5 class="modal-title" id="resultModalLabel{{ loop.index }}">Results for {{ result.url }}</h5>
-                                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                                </div>
-                                <div class="modal-body">
-                                    <ul class="nav nav-tabs" id="myTab{{ loop.index }}" role="tablist">
-                                        <li class="nav-item" role="presentation">
-                                            <button class="nav-link active" id="details-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#details{{ loop.index }}" type="button" role="tab" aria-controls="details{{ loop.index }}" aria-selected="true">
-                                                Details
-                                            </button>
-                                        </li>
-                                        {% if result.analysis_results is defined and result.analysis_results %}
-                                            {% for prompt_name, analysis in result.analysis_results.items() %}
-                                            <li class="nav-item" role="presentation">
-                                                <button class="nav-link" id="{{ prompt_name|lower }}-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#{{ prompt_name|lower }}{{ loop.parent.index }}" type="button" role="tab" aria-controls="{{ prompt_name|lower }}{{ loop.parent.index }}" aria-selected="false">
-                                                    {{ prompt_name }}
-                                                </button>
-                                            </li>
-                                            {% endfor %}
-                                        {% endif %}
-                                        
-                                        <!-- Added structured data tab -->
-                                        <li class="nav-item" role="presentation">
-                                            <button class="nav-link" id="structured-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#structured{{ loop.index }}" type="button" role="tab" aria-controls="structured{{ loop.index }}" aria-selected="false">
-                                                Structured Data
-                                            </button>
-                                        </li>
-                                        
-                                        <!-- Added raw data tab -->
-                                        <li class="nav-item" role="presentation">
-                                            <button class="nav-link" id="raw-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#raw{{ loop.index }}" type="button" role="tab" aria-controls="raw{{ loop.index }}" aria-selected="false">
-                                                Raw Data
-                                            </button>
-                                        </li>
-                                    </ul>
-                                    <div class="tab-content pt-3" id="myTabContent{{ loop.index }}">
-                                        <div class="tab-pane fade show active" id="details{{ loop.index }}" role="tabpanel" aria-labelledby="details-tab{{ loop.index }}">
-                                            <div class="row">
-                                                <div class="col-md-6">
-                                                    <h6>Metadata</h6>
-                                                    <table class="table table-sm">
-                                                        <tr>
-                                                            <th>URL:</th>
-                                                            <td><a href="{{ result.url }}" target="_blank">{{ result.url }}</a></td>
-                                                        </tr>
-                                                        <tr>
-                                                            <th>Title:</th>
-                                                            <td>{{ result.title }}</td>
-                                                        </tr>
-                                                        <tr>
-                                                            <th>Status:</th>
-                                                            <td>
-                                                                {% if result.status == 'success' %}
-                                                                    <span class="badge bg-success">Success</span>
-                                                                {% elif result.status == 'scrape_error' %}
-                                                                    <span class="badge bg-warning">Scrape Error</span>
-                                                                {% elif result.status == 'analysis_error' %}
-                                                                    <span class="badge bg-danger">Analysis Error</span>
-                                                                {% else %}
-                                                                    <span class="badge bg-secondary">{{ result.status }}</span>
-                                                                {% endif %}
-                                                            </td>
-                                                        </tr>
-                                                        <tr>
-                                                            <th>Word Count:</th>
-                                                            <td>{{ result.word_count|default(0)|safe_round|int }}</td>
-                                                        </tr>
-                                                        <tr>
-                                                            <th>Content Type:</th>
-                                                            <td>{{ result.content_type|default('html') }}</td>
-                                                        </tr>
-                                                        <tr>
-                                                            <th>API Tokens:</th>
-                                                            <td>{{ result.api_tokens|default(0)|safe_round|int }}</td>
-                                                        </tr>
-                                                        <tr>
-                                                            <th>Processed:</th>
-                                                            <td>{{ result.processed_at|format_date }}</td>
-                                                        </tr>
-                                                    </table>
-                                                </div>
-                                                <div class="col-md-6">
-                                                    {% if result.error %}
-                                                    <div class="alert alert-danger">
-                                                        <h6>Error:</h6>
-                                                        <p>{{ result.error }}</p>
-                                                    </div>
-                                                    {% endif %}
-                                                </div>
-                                            </div>
-                                        </div>
-                                        
-                                        {% if result.analysis_results is defined and result.analysis_results %}
-                                            {% for prompt_name, analysis in result.analysis_results.items() %}
-                                            <div class="tab-pane fade" id="{{ prompt_name|lower }}{{ loop.parent.index }}" role="tabpanel" aria-labelledby="{{ prompt_name|lower }}-tab{{ loop.parent.index }}">
-                                                {% if analysis.error %}
-                                                <div class="alert alert-danger">
-                                                    <h6>Error:</h6>
-                                                    <p>{{ analysis.error }}</p>
-                                                </div>
-                                                {% else %}
-                                                <div class="d-flex justify-content-between mb-2">
-                                                    <span class="badge bg-info text-dark">Model: {{ analysis.model|default('Unknown') }}</span>
-                                                    <span class="badge bg-secondary">{{ analysis.tokens|default(0) }} tokens</span>
-                                                    <span class="badge bg-light text-dark">
-                                                        {% if analysis.processing_time is defined and analysis.processing_time is not none %}
-                                                            {{ analysis.processing_time|round(2) }} seconds
+            <!-- Modal for each result -->
+            <div class="modal fade" id="resultModal{{ loop.index }}" tabindex="-1" aria-labelledby="resultModalLabel{{ loop.index }}" aria-hidden="true">
+                <div class="modal-dialog modal-xl modal-dialog-scrollable">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="resultModalLabel{{ loop.index }}">Results for {{ result.url }}</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">
+                            <ul class="nav nav-tabs" id="myTab{{ loop.index }}" role="tablist">
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link active" id="details-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#details{{ loop.index }}" type="button" role="tab" aria-controls="details{{ loop.index }}" aria-selected="true">
+                                        Details
+                                    </button>
+                                </li>
+                                {% if result.analysis_results is defined and result.analysis_results %}
+                                    {% for prompt_name, analysis in result.analysis_results.items() %}
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="{{ prompt_name|lower }}-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#{{ prompt_name|lower }}{{ loop.parent.index }}" type="button" role="tab" aria-controls="{{ prompt_name|lower }}{{ loop.parent.index }}" aria-selected="false">
+                                            {{ prompt_name }}
+                                        </button>
+                                    </li>
+                                    {% endfor %}
+                                {% endif %}
+                                
+                                <!-- Added structured data tab -->
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="structured-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#structured{{ loop.index }}" type="button" role="tab" aria-controls="structured{{ loop.index }}" aria-selected="false">
+                                        Structured Data
+                                    </button>
+                                </li>
+                                
+                                <!-- Added raw data tab -->
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="raw-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#raw{{ loop.index }}" type="button" role="tab" aria-controls="raw{{ loop.index }}" aria-selected="false">
+                                        Raw Data
+                                    </button>
+                                </li>
+                            </ul>
+                            <div class="tab-content pt-3" id="myTabContent{{ loop.index }}">
+                                <div class="tab-pane fade show active" id="details{{ loop.index }}" role="tabpanel" aria-labelledby="details-tab{{ loop.index }}">
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <h6>Metadata</h6>
+                                            <table class="table table-sm">
+                                                <tr>
+                                                    <th>URL:</th>
+                                                    <td><a href="{{ result.url }}" target="_blank">{{ result.url }}</a></td>
+                                                </tr>
+                                                <tr>
+                                                    <th>Title:</th>
+                                                    <td>{{ result.title }}</td>
+                                                </tr>
+                                                <tr>
+                                                    <th>Status:</th>
+                                                    <td>
+                                                        {% if result.status == 'success' %}
+                                                            <span class="badge bg-success">Success</span>
+                                                        {% elif result.status == 'scrape_error' %}
+                                                            <span class="badge bg-warning">Scrape Error</span>
+                                                        {% elif result.status == 'analysis_error' %}
+                                                            <span class="badge bg-danger">Analysis Error</span>
                                                         {% else %}
-                                                            0 seconds
+                                                            <span class="badge bg-secondary">{{ result.status }}</span>
                                                         {% endif %}
-                                                    </span>
-                                                </div>
-                                                <div class="border p-3 bg-light">
-                                                    {{ analysis.analysis|default('')|safe|nl2br }}
-                                                </div>
-                                                {% endif %}
-                                            </div>
-                                            {% endfor %}
-                                        {% endif %}
-                                        
-                                        <!-- Structured Data Tab Content -->
-                                        <div class="tab-pane fade" id="structured{{ loop.index }}" role="tabpanel" aria-labelledby="structured-tab{{ loop.index }}">
-                                            <div class="structured-data">
-                                                <div class="table-responsive">
-                                                    <table class="table table-sm table-striped">
-                                                        <thead>
-                                                            <tr>
-                                                                <th>Field</th>
-                                                                <th>Value</th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                            {% for field_name, field_value in result.items() if field_name.startswith(('ca_', 'cr_', 'pa_', 'si_')) %}
-                                                                <tr>
-                                                                    <td class="text-nowrap">
-                                                                        <strong>{{ field_name|replace('_', ' ')|title }}</strong>
-                                                                        <span class="text-muted d-block small">{{ field_name }}</span>
-                                                                    </td>
-                                                                    <td>{{ field_value }}</td>
-                                                                </tr>
-                                                            {% else %}
-                                                                <tr>
-                                                                    <td colspan="2" class="text-center">No structured fields found</td>
-                                                                </tr>
-                                                            {% endfor %}
-                                                        </tbody>
-                                                    </table>
-                                                </div>
-                                            </div>
+                                                    </td>
+                                                </tr>
+                                                <tr>
+                                                    <th>Word Count:</th>
+                                                    <td>{{ result.word_count|default(0)|safe_round|int }}</td>
+                                                </tr>
+                                                <tr>
+                                                    <th>Content Type:</th>
+                                                    <td>
+                                                        {% if result.content_type == 'pdf' %}
+                                                        <span class="badge bg-danger">PDF Document</span>
+                                                        {% elif result.content_type == 'docx' %}
+                                                        <span class="badge bg-primary">Word Document</span>
+                                                        {% elif result.content_type == 'pptx' %}
+                                                        <span class="badge bg-warning text-dark">PowerPoint</span>
+                                                        {% else %}
+                                                        <span class="badge bg-info text-dark">HTML</span>
+                                                        {% endif %}
+                                                    </td>
+                                                </tr>
+                                                <tr>
+                                                    <th>API Tokens:</th>
+                                                    <td>{{ result.api_tokens|default(0)|safe_round|int }}</td>
+                                                </tr>
+                                                <tr>
+                                                    <th>Processed:</th>
+                                                    <td>{{ result.processed_at|format_date }}</td>
+                                                </tr>
+                                            </table>
                                         </div>
-                                        
-                                        <!-- Raw Data Tab Content -->
-                                        <div class="tab-pane fade" id="raw{{ loop.index }}" role="tabpanel" aria-labelledby="raw-tab{{ loop.index }}">
-                                            <div class="raw-data mt-3">
-                                                <button class="btn btn-sm btn-outline-secondary mb-2" type="button" 
-                                                        data-bs-toggle="collapse" data-bs-target="#rawContent{{ loop.index }}" 
-                                                        aria-expanded="false" aria-controls="rawContent{{ loop.index }}">
-                                                    Toggle Raw Data
-                                                </button>
-                                                <div class="collapse" id="rawContent{{ loop.index }}">
-                                                    <pre class="bg-dark text-light p-3 rounded"><code>{{ result.data }}</code></pre>
-                                                </div>
+                                        <div class="col-md-6">
+                                            {% if result.error %}
+                                            <div class="alert alert-danger">
+                                                <h6>Error:</h6>
+                                                <p>{{ result.error }}</p>
                                             </div>
+                                            {% endif %}
                                         </div>
                                     </div>
                                 </div>
-                                <div class="modal-footer">
-                                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                
+                                {% if result.analysis_results is defined and result.analysis_results %}
+                                    {% for prompt_name, analysis in result.analysis_results.items() %}
+                                    <div class="tab-pane fade" id="{{ prompt_name|lower }}{{ loop.parent.index }}" role="tabpanel" aria-labelledby="{{ prompt_name|lower }}-tab{{ loop.parent.index }}">
+                                        {% if analysis.error %}
+                                        <div class="alert alert-danger">
+                                            <h6>Error:</h6>
+                                            <p>{{ analysis.error }}</p>
+                                        </div>
+                                        {% else %}
+                                        <div class="d-flex justify-content-between mb-2">
+                                            <span class="badge bg-info text-dark">Model: {{ analysis.model|default('Unknown') }}</span>
+                                            <span class="badge bg-secondary">{{ analysis.tokens|default(0) }} tokens</span>
+                                            <span class="badge bg-light text-dark">
+                                                {% if analysis.processing_time is defined and analysis.processing_time is not none %}
+                                                    {{ analysis.processing_time|round(2) }} seconds
+                                                {% else %}
+                                                    0 seconds
+                                                {% endif %}
+                                            </span>
+                                        </div>
+                                        <div class="border p-3 bg-light">
+                                            {{ analysis.analysis|default('')|safe|nl2br }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                    {% endfor %}
+                                {% endif %}
+                                
+                                <!-- Structured Data Tab Content -->
+                                <div class="tab-pane fade" id="structured{{ loop.index }}" role="tabpanel" aria-labelledby="structured-tab{{ loop.index }}">
+                                    <div class="structured-data">
+                                        <div class="table-responsive">
+                                            <table class="table table-sm table-striped">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Field</th>
+                                                        <th>Value</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {% for field_name, field_value in result.items() if field_name.startswith(('ca_', 'cr_', 'pa_', 'si_')) %}
+                                                        <tr>
+                                                            <td class="text-nowrap">
+                                                                <strong>{{ field_name|replace('_', ' ')|title }}</strong>
+                                                                <span class="text-muted d-block small">{{ field_name }}</span>
+                                                            </td>
+                                                            <td>{{ field_value }}</td>
+                                                        </tr>
+                                                    {% else %}
+                                                        <tr>
+                                                            <td colspan="2" class="text-center">No structured fields found</td>
+                                                        </tr>
+                                                    {% endfor %}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Raw Data Tab Content -->
+                                <div class="tab-pane fade" id="raw{{ loop.index }}" role="tabpanel" aria-labelledby="raw-tab{{ loop.index }}">
+                                    <div class="raw-data mt-3">
+                                        <button class="btn btn-sm btn-outline-secondary mb-2" type="button" 
+                                                data-bs-toggle="collapse" data-bs-target="#rawContent{{ loop.index }}" 
+                                                aria-expanded="false" aria-controls="rawContent{{ loop.index }}">
+                                            Toggle Raw Data
+                                        </button>
+                                        <div class="collapse" id="rawContent{{ loop.index }}">
+                                            <pre class="bg-dark text-light p-3 rounded"><code>{{ result.data }}</code></pre>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        </div>
                     </div>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
+                </div>
+            </div>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
         {% else %}
         <div class="alert alert-info m-3">
             <p class="mb-0 text-center">No results available yet.</p>

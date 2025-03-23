@@ -10,6 +10,13 @@ tiktoken>=0.3.0
 scrapingbee>=1.0.0
 beautifulsoup4>=4.10.0
 requests>=2.28.0
+trafilatura>=1.5.0  # Added for better text extraction
+
+# Document processing
+PyPDF2>=3.0.0  # For PDF extraction
+python-docx>=0.8.11  # For Word document processing
+python-pptx>=0.6.21  # For PowerPoint presentation processing
+pymupdf>=1.21.1  # Optional but better PDF extraction (aka fitz)
 
 # Rate limiting
 limits>=2.8.0
@@ -27,6 +34,7 @@ concurrent-log-handler>=0.9.20
 pandas>=1.5.0
 openpyxl>=3.0.10  # For Excel file support
 python-dateutil>=2.8.2
+pytz>=2023.3  # For timezone handling
 
 # Environment and configuration
 python-dotenv>=0.20.0
