@@ -933,224 +933,224 @@ class ContentAnalyzer:
         
         return processed_results
     
-async def process_url_async(self, url: str, prompt_names: List[str], 
-                          company_info: Optional[Dict[str, Any]] = None,
-                          content_type: str = "html", 
-                          force_browser: bool = False,
-                          job_id: str = None) -> Dict[str, Any]:
-    """
-    Asynchronously process a URL by scraping content and analyzing it.
-    
-    Args:
-        url: URL to process
-        prompt_names: List of prompt configuration names to use
-        company_info: Optional company context info
-        content_type: Content type (html, pdf, etc.)
-        force_browser: Whether to force browser-based scraping
-        job_id: Optional job ID for tracking related requests
+    async def process_url_async(self, url: str, prompt_names: List[str], 
+                              company_info: Optional[Dict[str, Any]] = None,
+                              content_type: str = "html", 
+                              force_browser: bool = False,
+                              job_id: str = None) -> Dict[str, Any]:
+        """
+        Asynchronously process a URL by scraping content and analyzing it.
         
-    Returns:
-        Dictionary containing processing results
-    """
-    # Initialize BigQueryContentStore if not already done
-    if not hasattr(self, 'content_store'):
-        try:
-            from bigquery_content_store import BigQueryContentStore
-            self.content_store = BigQueryContentStore()
-        except ImportError:
-            logger.warning("BigQueryContentStore not available - BigQuery integration disabled")
-            self.content_store = None
-    
-    logger.info(f"Async processing URL: {url} with {len(prompt_names)} prompts")
-    
-    # Load prompts
-    prompt_loader = PromptLoader()
-    prompt_configs = prompt_loader.load_prompts()
-    
-    result = {
-        "url": url,
-        "status": "pending",
-        "job_id": job_id,
-        "created_at": datetime.now().isoformat(),
-        "scrape_time": 0,
-        "analysis_time": 0,
-        "total_time": 0,
-        "analysis_results": {}
-    }
-    
-    start_time = time.time()
-    
-    # Step 1: Scrape the URL
-    try:
-        content_result = await self.scrape_url_async(url, content_type, force_browser)
-    except Exception as e:
-        logger.error(f"Error in async scraping for {url}: {str(e)}")
-        content_result = {
-            "error": f"Error running scraping task: {str(e)}",
+        Args:
+            url: URL to process
+            prompt_names: List of prompt configuration names to use
+            company_info: Optional company context info
+            content_type: Content type (html, pdf, etc.)
+            force_browser: Whether to force browser-based scraping
+            job_id: Optional job ID for tracking related requests
+            
+        Returns:
+            Dictionary containing processing results
+        """
+        # Initialize BigQueryContentStore if not already done
+        if not hasattr(self, 'content_store'):
+            try:
+                from bigquery_content_store import BigQueryContentStore
+                self.content_store = BigQueryContentStore()
+            except ImportError:
+                logger.warning("BigQueryContentStore not available - BigQuery integration disabled")
+                self.content_store = None
+        
+        logger.info(f"Async processing URL: {url} with {len(prompt_names)} prompts")
+        
+        # Load prompts
+        prompt_loader = PromptLoader()
+        prompt_configs = prompt_loader.load_prompts()
+        
+        result = {
             "url": url,
-            "status": "error"
+            "status": "pending",
+            "job_id": job_id,
+            "created_at": datetime.now().isoformat(),
+            "scrape_time": 0,
+            "analysis_time": 0,
+            "total_time": 0,
+            "analysis_results": {}
         }
-    
-    # Check for scraping errors
-    if content_result.get("status") != "success":
+        
+        start_time = time.time()
+        
+        # Step 1: Scrape the URL
+        try:
+            content_result = await self.scrape_url_async(url, content_type, force_browser)
+        except Exception as e:
+            logger.error(f"Error in async scraping for {url}: {str(e)}")
+            content_result = {
+                "error": f"Error running scraping task: {str(e)}",
+                "url": url,
+                "status": "error"
+            }
+        
+        # Check for scraping errors
+        if content_result.get("status") != "success":
+            result.update({
+                "status": "scrape_error",
+                "error": content_result.get("error", "Unknown scraping error"),
+                "total_time": time.time() - start_time
+            })
+            
+            # Store failed scrape in BigQuery if enabled
+            if hasattr(self, 'content_store') and self.content_store and self.content_store.enable_storage:
+                try:
+                    await self.content_store.store_content(
+                        url=url,
+                        title=content_result.get("title", ""),
+                        content_text="",  # No content for failed scrapes
+                        job_id=job_id,
+                        content_type=content_type,
+                        scrape_info={
+                            "status": "error",
+                            "error": content_result.get("error", "Unknown scraping error"),
+                            "scrape_time": time.time() - start_time
+                        },
+                        company_info=company_info
+                    )
+                except Exception as e:
+                    logger.error(f"Error storing failed scrape in BigQuery: {str(e)}")
+            
+            return result
+        
+        # Update result with content info
         result.update({
-            "status": "scrape_error",
-            "error": content_result.get("error", "Unknown scraping error"),
-            "total_time": time.time() - start_time
+            "title": content_result.get("title", ""),
+            "content_type": content_result.get("content_type", "html"),
+            "word_count": content_result.get("word_count", 0),
+            "scrape_time": content_result.get("scrape_time", 0)
         })
         
-        # Store failed scrape in BigQuery if enabled
-        if hasattr(self, 'content_store') and self.content_store and self.content_store.enable_storage:
-            try:
-                await self.content_store.store_content(
-                    url=url,
-                    title=content_result.get("title", ""),
-                    content_text="",  # No content for failed scrapes
-                    job_id=job_id,
-                    content_type=content_type,
-                    scrape_info={
-                        "status": "error",
-                        "error": content_result.get("error", "Unknown scraping error"),
-                        "scrape_time": time.time() - start_time
-                    },
-                    company_info=company_info
-                )
-            except Exception as e:
-                logger.error(f"Error storing failed scrape in BigQuery: {str(e)}")
+        # Step 2: Analyze with each requested prompt
+        content_text = content_result.get("text", "")
+        api_tokens = 0
+        structured_data = {}
         
-        return result
-    
-    # Update result with content info
-    result.update({
-        "title": content_result.get("title", ""),
-        "content_type": content_result.get("content_type", "html"),
-        "word_count": content_result.get("word_count", 0),
-        "scrape_time": content_result.get("scrape_time", 0)
-    })
-    
-    # Step 2: Analyze with each requested prompt
-    content_text = content_result.get("text", "")
-    api_tokens = 0
-    structured_data = {}
-    
-    for prompt_name in prompt_names:
-        if prompt_name not in prompt_configs:
-            logger.warning(f"Prompt configuration '{prompt_name}' not found")
-            result["analysis_results"][prompt_name] = {
-                "error": f"Prompt configuration '{prompt_name}' not found"
-            }
-            continue
-        
-        try:
-            # Perform analysis asynchronously
-            prompt_config = prompt_configs[prompt_name]
-            analysis_result = await self.analyze_with_prompt_async(
-                content_text, prompt_config, company_info
-            )
-            
-            # Check for errors
-            if "error" in analysis_result:
+        for prompt_name in prompt_names:
+            if prompt_name not in prompt_configs:
+                logger.warning(f"Prompt configuration '{prompt_name}' not found")
                 result["analysis_results"][prompt_name] = {
-                    "error": analysis_result["error"]
+                    "error": f"Prompt configuration '{prompt_name}' not found"
                 }
                 continue
             
-            # Extract structured data from analysis text with delimiter format
-            analysis_text = analysis_result.get("analysis", "")
-            extracted_fields = {}
-            
-            # Look for field||| or field ||| patterns in the text
-            for line in analysis_text.split('\n'):
-                if '|||' in line:
-                    parts = line.split('|||', 1)  # Split on first occurrence only
-                    if len(parts) == 2:
-                        field_name = parts[0].strip()
-                        field_value = parts[1].strip()
-                        
-                        if field_name and field_value:
-                            extracted_fields[field_name] = field_value
-            
-            # Add the analysis result with parsed fields
-            result["analysis_results"][prompt_name] = {
-                "analysis": analysis_result.get("analysis", ""),
-                "model": analysis_result.get("model", ""),
-                "tokens": analysis_result.get("total_tokens", 0),
-                "processing_time": analysis_result.get("processing_time", 0),
-                "parsed_fields": extracted_fields  # Add extracted fields
-            }
-            
-            # If we found structured fields, add them to the structured data
-            if extracted_fields:
-                if prompt_name not in structured_data:
-                    structured_data[prompt_name] = {}
-                structured_data[prompt_name].update(extracted_fields)
-            
-            # Update token count
-            api_tokens += analysis_result.get("total_tokens", 0)
-            
-            logger.info(f"Successfully analyzed content with prompt '{prompt_name}'")
-            
-        except Exception as e:
-            logger.error(f"Error analyzing with prompt '{prompt_name}': {str(e)}")
-            result["analysis_results"][prompt_name] = {
-                "error": str(e)
-            }
-    
-    # Add structured data to result
-    if structured_data:
-        result["structured_data"] = structured_data
+            try:
+                # Perform analysis asynchronously
+                prompt_config = prompt_configs[prompt_name]
+                analysis_result = await self.analyze_with_prompt_async(
+                    content_text, prompt_config, company_info
+                )
+                
+                # Check for errors
+                if "error" in analysis_result:
+                    result["analysis_results"][prompt_name] = {
+                        "error": analysis_result["error"]
+                    }
+                    continue
+                
+                # Extract structured data from analysis text with delimiter format
+                analysis_text = analysis_result.get("analysis", "")
+                extracted_fields = {}
+                
+                # Look for field||| or field ||| patterns in the text
+                for line in analysis_text.split('\n'):
+                    if '|||' in line:
+                        parts = line.split('|||', 1)  # Split on first occurrence only
+                        if len(parts) == 2:
+                            field_name = parts[0].strip()
+                            field_value = parts[1].strip()
+                            
+                            if field_name and field_value:
+                                extracted_fields[field_name] = field_value
+                
+                # Add the analysis result with parsed fields
+                result["analysis_results"][prompt_name] = {
+                    "analysis": analysis_result.get("analysis", ""),
+                    "model": analysis_result.get("model", ""),
+                    "tokens": analysis_result.get("total_tokens", 0),
+                    "processing_time": analysis_result.get("processing_time", 0),
+                    "parsed_fields": extracted_fields  # Add extracted fields
+                }
+                
+                # If we found structured fields, add them to the structured data
+                if extracted_fields:
+                    if prompt_name not in structured_data:
+                        structured_data[prompt_name] = {}
+                    structured_data[prompt_name].update(extracted_fields)
+                
+                # Update token count
+                api_tokens += analysis_result.get("total_tokens", 0)
+                
+                logger.info(f"Successfully analyzed content with prompt '{prompt_name}'")
+                
+            except Exception as e:
+                logger.error(f"Error analyzing with prompt '{prompt_name}': {str(e)}")
+                result["analysis_results"][prompt_name] = {
+                    "error": str(e)
+                }
         
-        # Also add structured data to result root for backwards compatibility
-        for prompt_fields in structured_data.values():
-            for field_name, field_value in prompt_fields.items():
-                result[field_name] = field_value
-    
-    # Update final result
-    total_time = time.time() - start_time
-    result.update({
-        "status": "success",
-        "api_tokens": api_tokens,
-        "analysis_time": total_time - result["scrape_time"],
-        "total_time": total_time
-    })
-    
-    # Store the scraped content and analysis results in BigQuery
-    if hasattr(self, 'content_store') and self.content_store and self.content_store.enable_storage:
-        try:
-            # Prepare analysis info
-            analysis_info = {
-                "api_tokens": api_tokens,
-                "analysis_time": result["analysis_time"],
-                "prompt_names": prompt_names,
-                "analysis_count": len(prompt_names)
-            }
+        # Add structured data to result
+        if structured_data:
+            result["structured_data"] = structured_data
             
-            # Store content in BigQuery
-            content_id = await self.content_store.store_content(
-                url=url,
-                title=result.get("title", ""),
-                content_text=content_text,
-                job_id=job_id,
-                content_type=result.get("content_type", "html"),
-                scrape_info={
-                    "status": "success",
-                    "scrape_time": result["scrape_time"],
-                    "enhanced_scraping": content_result.get("enhanced_scraping", False),
-                    "retry_attempts": content_result.get("retry_attempts", 0)
-                },
-                company_info=company_info,
-                analysis_info=analysis_info
-            )
-            
-            # Add content ID reference to result
-            if content_id:
-                result["content_id"] = content_id
-                logger.info(f"Stored content in BigQuery with ID: {content_id}")
-        except Exception as e:
-            logger.error(f"Error storing content in BigQuery: {str(e)}")
-    
-    logger.info(f"Completed processing {url} - status: {result['status']}")
-    return result
+            # Also add structured data to result root for backwards compatibility
+            for prompt_fields in structured_data.values():
+                for field_name, field_value in prompt_fields.items():
+                    result[field_name] = field_value
+        
+        # Update final result
+        total_time = time.time() - start_time
+        result.update({
+            "status": "success",
+            "api_tokens": api_tokens,
+            "analysis_time": total_time - result["scrape_time"],
+            "total_time": total_time
+        })
+        
+        # Store the scraped content and analysis results in BigQuery
+        if hasattr(self, 'content_store') and self.content_store and self.content_store.enable_storage:
+            try:
+                # Prepare analysis info
+                analysis_info = {
+                    "api_tokens": api_tokens,
+                    "analysis_time": result["analysis_time"],
+                    "prompt_names": prompt_names,
+                    "analysis_count": len(prompt_names)
+                }
+                
+                # Store content in BigQuery
+                content_id = await self.content_store.store_content(
+                    url=url,
+                    title=result.get("title", ""),
+                    content_text=content_text,
+                    job_id=job_id,
+                    content_type=result.get("content_type", "html"),
+                    scrape_info={
+                        "status": "success",
+                        "scrape_time": result["scrape_time"],
+                        "enhanced_scraping": content_result.get("enhanced_scraping", False),
+                        "retry_attempts": content_result.get("retry_attempts", 0)
+                    },
+                    company_info=company_info,
+                    analysis_info=analysis_info
+                )
+                
+                # Add content ID reference to result
+                if content_id:
+                    result["content_id"] = content_id
+                    logger.info(f"Stored content in BigQuery with ID: {content_id}")
+            except Exception as e:
+                logger.error(f"Error storing content in BigQuery: {str(e)}")
+        
+        logger.info(f"Completed processing {url} - status: {result['status']}")
+        return result
         
     # Non-async versions for backward compatibility
     def scrape_url(self, url: str, content_type: str = "html", 
