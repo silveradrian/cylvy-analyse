@@ -934,10 +934,10 @@ class ContentAnalyzer:
         return processed_results
     
     async def process_url_async(self, url: str, prompt_names: List[str], 
-                              company_info: Optional[Dict[str, Any]] = None,
-                              content_type: str = "html", 
-                              force_browser: bool = False,
-                              job_id: str = None) -> Dict[str, Any]:
+                          company_info: Optional[Dict[str, Any]] = None,
+                          content_type: str = "html", 
+                          force_browser: bool = False,
+                          job_id: str = None) -> Dict[str, Any]:
         """
         Asynchronously process a URL by scraping content and analyzing it.
         
@@ -1006,7 +1006,7 @@ class ContentAnalyzer:
                         url=url,
                         title=content_result.get("title", ""),
                         content_text="",  # No content for failed scrapes
-                        job_id=job_id,
+                        job_id=job_id,  # This is correct
                         content_type=content_type,
                         scrape_info={
                             "status": "error",
@@ -1125,12 +1125,15 @@ class ContentAnalyzer:
                     "analysis_count": len(prompt_names)
                 }
                 
+                # Log job_id before storing - ADD THIS LINE FOR DEBUGGING
+                logger.info(f"Storing content with job_id: {job_id}")
+                
                 # Store content in BigQuery
                 content_id = await self.content_store.store_content(
                     url=url,
                     title=result.get("title", ""),
                     content_text=content_text,
-                    job_id=job_id,
+                    job_id=job_id,  # This parameter is correct
                     content_type=result.get("content_type", "html"),
                     scrape_info={
                         "status": "success",
