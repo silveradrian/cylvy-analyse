@@ -134,7 +134,8 @@ def process_urls_in_parallel(job_id: str, url_data_list: List[Dict[str, Any]],
                             prompt_names=prompt_names,
                             company_info=company_info,
                             content_type=content_type,
-                            force_browser=use_browser
+                            force_browser=use_browser,
+                            job_id=job_id
                         )
                         
                         # Add job ID

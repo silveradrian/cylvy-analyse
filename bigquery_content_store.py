@@ -210,11 +210,11 @@ class BigQueryContentStore:
             
         return content_id
     
-# In bigquery_content_store.py, update the _store_raw_content method:
+    # In bigquery_content_store.py, update the _store_raw_content method:
 
     async def _store_raw_content(self, content_id, job_id, url, title, content_text, 
-                           content_type, word_count, domain, scrape_status, 
-                           scrape_time, analysis_tokens, metadata, company_info):
+                               content_type, word_count, domain, scrape_status, 
+                               scrape_time, analysis_tokens, metadata, company_info):
         """Store raw content in BigQuery."""
         try:
             from google.cloud import bigquery
@@ -222,13 +222,17 @@ class BigQueryContentStore:
             # Get current time for timestamp
             current_time = datetime.now()
             
-            # Add debug logging for job_id - ADD THIS LINE
-            logger.debug(f"BIGQUERY INSERT - job_id value: '{job_id}'")
+            # Enhanced logging for debugging
+            logger.info(f"BIGQUERY INSERT - job_id value: '{job_id}'")
+            if company_info:
+                logger.info(f"BIGQUERY INSERT - company_info present: {type(company_info)}, keys: {list(company_info.keys()) if isinstance(company_info, dict) else 'Not a dict'}")
+            else:
+                logger.info(f"BIGQUERY INSERT - company_info is None or empty")
             
             # Prepare row data - using custom JSON encoder for datetime objects
             row = {
                 "content_id": content_id,
-                "job_id": job_id,  # This should be correctly set but is showing as None
+                "job_id": job_id,
                 "url": url,
                 "title": title,
                 "content_text": content_text,
@@ -240,7 +244,6 @@ class BigQueryContentStore:
                 "analysis_tokens": analysis_tokens,
                 "metadata": json.dumps(metadata, cls=DateTimeEncoder),
                 "company_info": json.dumps(company_info, cls=DateTimeEncoder) if company_info else None,
-                # FIX: Convert datetime to string using isoformat()
                 "created_at": current_time.isoformat()
             }
             

@@ -1125,15 +1125,16 @@ class ContentAnalyzer:
                     "analysis_count": len(prompt_names)
                 }
                 
-                # Log job_id before storing - ADD THIS LINE FOR DEBUGGING
-                logger.info(f"Storing content with job_id: {job_id}")
+                # CRITICAL FIX: Get job_id from the result object if it's not set in the parameter
+                job_id_to_use = job_id if job_id else result.get("job_id")
+                logger.info(f"Storing content with job_id: {job_id_to_use}")
                 
                 # Store content in BigQuery
                 content_id = await self.content_store.store_content(
                     url=url,
                     title=result.get("title", ""),
                     content_text=content_text,
-                    job_id=job_id,  # This parameter is correct
+                    job_id=job_id_to_use,  # Use the retrieved job_id
                     content_type=result.get("content_type", "html"),
                     scrape_info={
                         "status": "success",
@@ -1440,7 +1441,8 @@ class URLProcessor:
                         prompt_names=prompt_names,
                         company_info=company_info,
                         content_type=content_type, 
-                        force_browser=force_browser
+                        force_browser=force_browser,
+                        job_id=job_id 
                     )
                     result['job_id'] = job_id
                     return result
