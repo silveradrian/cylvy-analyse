@@ -936,12 +936,23 @@ class ContentAnalyzer:
  
     # Then modify the process_url_async method:
     async def process_url_async(self, url: str, prompt_names: List[str], 
-                              company_info: Optional[Dict[str, Any]] = None,
-                              content_type: str = "html", 
-                              force_browser: bool = False,
-                              job_id: str = None) -> Dict[str, Any]:
+                          company_info: Optional[Dict[str, Any]] = None,
+                          content_type: str = "html", 
+                          force_browser: bool = False,
+                          job_id: str = None) -> Dict[str, Any]:
         """
         Asynchronously process a URL by scraping content and analyzing it.
+        
+        Args:
+            url: URL to process
+            prompt_names: List of prompt configuration names to use
+            company_info: Optional company context info
+            content_type: Content type (html, pdf, etc.)
+            force_browser: Whether to force browser-based scraping
+            job_id: Optional job ID for tracking related requests
+            
+        Returns:
+            Dictionary containing processing results
         """
         # Initialize BigQueryContentStore if not already done
         if not hasattr(self, 'content_store'):
@@ -952,18 +963,11 @@ class ContentAnalyzer:
                 logger.warning("BigQueryContentStore not available - BigQuery integration disabled")
                 self.content_store = None
         
-        # ADDED: Try to find job_id from recent jobs if not provided
-        if not job_id:
-            try:
-                # Get the most recent running job to associate with this URL
-                recent_jobs = db.get_all_jobs(limit=1, status='running')
-                if recent_jobs and len(recent_jobs) > 0:
-                    job_id = recent_jobs[0].get('job_id')
-                    logger.info(f"Auto-associated URL {url} with running job: {job_id}")
-            except Exception as e:
-                logger.warning(f"Could not auto-associate job_id: {str(e)}")
+        # NEW: Try to get job_id from instance attribute if not provided
+        if not job_id and hasattr(self, '_current_job_id'):
+            job_id = self._current_job_id
+            logger.info(f"Using job_id from instance attribute: {job_id}")
         
-            
         logger.info(f"Async processing URL: {url} with {len(prompt_names)} prompts")
         
         # Load prompts
@@ -973,7 +977,7 @@ class ContentAnalyzer:
         result = {
             "url": url,
             "status": "pending",
-            "job_id": job_id,
+            "job_id": job_id,  # Store job_id in the result
             "created_at": datetime.now().isoformat(),
             "scrape_time": 0,
             "analysis_time": 0,
@@ -1005,11 +1009,13 @@ class ContentAnalyzer:
             # Store failed scrape in BigQuery if enabled
             if hasattr(self, 'content_store') and self.content_store and self.content_store.enable_storage:
                 try:
+                    # Use the job_id directly here too
+                    job_id_to_use = job_id if job_id else result.get("job_id")
                     await self.content_store.store_content(
                         url=url,
                         title=content_result.get("title", ""),
                         content_text="",  # No content for failed scrapes
-                        job_id=job_id,  # This is correct
+                        job_id=job_id_to_use,  # Use the retrieved job_id
                         content_type=content_type,
                         scrape_info={
                             "status": "error",

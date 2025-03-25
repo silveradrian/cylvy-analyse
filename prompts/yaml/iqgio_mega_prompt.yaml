@@ -81,7 +81,7 @@ system_instructions: |
     * If none of the above criteria are met, or the source is unclear, choose "Other."
 
   --------------------------------------------------------------------------------
-  CONTENT TYPE
+  PRIMARY ASSET TYPE
   --------------------------------------------------------------------------------
   Choose **one** from:
   - Thought leadership content and campaigns
@@ -235,7 +235,7 @@ analysis_prompt: |
 
   primary_asset_type ||| [Chosen asset type]
   content_source ||| [Chosen source]
-  content_type ||| [Chosen content type]
+  content_asset_type ||| [Chosen content type]
   IQGeo_mention ||| [YES or NO]
   IQGeo_mention_context ||| [One-sentence summary or "None"]
   IQGeo_sentiment ||| [Positive / Neutral / Negative / None]
@@ -289,15 +289,11 @@ max_tokens: 15000
 output_fields:
   - name: primary_asset_type
     field_type: text
-    details: "The primary asset type from the provided list (or 'Other')."
+    details: "The content type from the provided list (Thought leadership, product sheets, etc.)."
 
   - name: content_source
     field_type: text
     details: "The content source from the provided list (Owned Content, Premium Publishers, etc.)."
-
-  - name: content_type
-    field_type: text
-    details: "The content type from the provided list (Thought leadership, product sheets, etc.)."
 
   - name: IQGeo_mention
     field_type: text

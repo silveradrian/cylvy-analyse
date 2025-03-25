@@ -297,6 +297,10 @@ def process_urls_in_background(job_id, url_data_list, prompt_names, company_info
         # Initialize analyzer
         analyzer = ContentAnalyzer()
         
+        # NEW: Set job_id as an attribute of the analyzer instance
+        # The process_url_async method can use this attribute
+        setattr(analyzer, '_current_job_id', job_id)
+        
         # Determine max concurrency - use environment variable or default to 20
         max_workers = min(int(os.environ.get('MAX_CONCURRENCY', '20')), len(url_data_list))
         logger.info(f"Processing with max concurrency of {max_workers} workers")
@@ -306,12 +310,16 @@ def process_urls_in_background(job_id, url_data_list, prompt_names, company_info
             try:
                 # Get URL from data
                 url = url_data.get('url') if isinstance(url_data, dict) else url_data
+                content_type = url_data.get('content_type', 'html') if isinstance(url_data, dict) else 'html'
+                force_browser = url_data.get('force_browser', False) if isinstance(url_data, dict) else False
                 
-                # Process URL
+                # Process URL - use original parameter list
                 result = analyzer.process_url(
                     url=url,
                     prompt_names=prompt_names,
-                    company_info=company_info
+                    company_info=company_info,
+                    content_type=content_type,
+                    force_browser=force_browser
                 )
                 
                 # Ensure job_id is set
