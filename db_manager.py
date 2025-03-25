@@ -32,6 +32,13 @@ class DatabaseManager:
     Manages database operations for the content analysis application.
     """
     
+    #!/usr/bin/env python3
+    """
+    Updates to db_manager.py to ensure persistent file-based database storage.
+    """
+
+    # Add these functions to your DatabaseManager class
+
     def __init__(self, db_path: str = None):
         """
         Initialize the database manager.
@@ -44,12 +51,28 @@ class DatabaseManager:
             data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
             os.makedirs(data_dir, exist_ok=True)
             db_path = os.path.join(data_dir, 'analysis.db')
-                
+        
+        # Ensure we never use an in-memory database
+        if db_path == ":memory:":
+            logger.warning("In-memory database requested but overridden for data persistence")
+            data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
+            os.makedirs(data_dir, exist_ok=True)
+            db_path = os.path.join(data_dir, 'analysis.db')
+        
+        # Store the database path
         self.db_path = db_path
-        self.init_db()  # Changed from self._init_db() to self.init_db()
-        self.db = self  # Add this line - this will make self.db.method() work by referring to self
+        
+        # Ensure the directory exists
+        db_dir = os.path.dirname(os.path.abspath(db_path))
+        if not os.path.exists(db_dir):
+            logger.info(f"Creating database directory: {db_dir}")
+            os.makedirs(db_dir, exist_ok=True)
+        
+        # Initialize the database
+        self.init_db()
+        self.db = self
         logger.info(f"Database initialized at {db_path}")
-    
+
     def get_connection(self) -> sqlite3.Connection:
         """
         Get a database connection with row factory for dict-like access.
@@ -57,9 +80,42 @@ class DatabaseManager:
         Returns:
             A SQLite connection object
         """
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        # Additional check to ensure we're not using in-memory database
+        if self.db_path == ":memory:":
+            logger.error("Attempted to use in-memory database. Overriding to file database.")
+            data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
+            os.makedirs(data_dir, exist_ok=True)
+            self.db_path = os.path.join(data_dir, 'analysis.db')
+        
+        # Create the connection
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            
+            # Test if the database is valid
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            
+            return conn
+        except sqlite3.Error as e:
+            logger.error(f"Error connecting to database at {self.db_path}: {e}")
+            
+            # If there's an error with the database file, try to recreate it
+            if "unable to open database file" in str(e) or "database disk image is malformed" in str(e):
+                logger.warning(f"Database file issue detected. Attempting to recreate database at {self.db_path}")
+                
+                # Try to create the directory again
+                db_dir = os.path.dirname(os.path.abspath(self.db_path))
+                os.makedirs(db_dir, exist_ok=True)
+                
+                # Create a new connection
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                self.init_db()  # Reinitialize the database schema
+                return conn
+            else:
+                raise
     
     def init_db(self) -> None:
         """
