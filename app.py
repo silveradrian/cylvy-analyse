@@ -1039,6 +1039,79 @@ def server_error(e):
     return render_template('error.html', error="Server error"), 500
 
 
+@app.route("/analyze-local-files", methods=["GET"])
+def analyze_local_files():
+    """
+    Analyze files from a local folder, treating them like URLs.
+    Example: http://localhost:5000/analyze-local-files?prompt=my_prompt_name
+    """
+    from local_file_handler import process_local_files
+    
+    folder_path = os.path.join(os.path.dirname(__file__), "local_input_files")
+    prompt_names = request.args.getlist("prompt")
+
+    if not prompt_names:
+        return jsonify({"error": "Specify at least one prompt using ?prompt=name"}), 400
+
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+        flash(f"Created folder {folder_path}. Please add files and try again.", "warning")
+        return redirect(url_for("index"))
+
+    file_paths = []
+
+    # List files in the directory
+    for fname in os.listdir(folder_path):
+        path = os.path.join(folder_path, fname)
+        if not os.path.isfile(path):
+            continue
+
+        # Determine content type based on file extension
+        ext = os.path.splitext(fname)[1].lower()
+        content_type = "html"
+        if ext == ".pdf":
+            content_type = "pdf"
+        elif ext == ".docx":
+            content_type = "docx"
+        elif ext == ".pptx":
+            content_type = "pptx"
+        elif ext == ".txt":
+            content_type = "html"  # Process text files as HTML
+        elif ext == ".html" or ext == ".htm":
+            content_type = "html"
+
+        # Store path information
+        file_paths.append({
+            "path": path,
+            "content_type": content_type,
+            "url": f"file://{path}"  # Keep URL format for display
+        })
+
+    if not file_paths:
+        flash(f"No files found in {folder_path}", "warning")
+        return redirect(url_for("index"))
+
+    # Create a new job
+    job_id = db.create_job(
+        urls=[f["url"] for f in file_paths],
+        prompts=prompt_names,
+        name="Local Files Analysis"
+    )
+
+    # Start processing thread
+    thread = threading.Thread(
+        target=process_local_files,
+        args=(job_id, file_paths, prompt_names, active_threads)
+    )
+    thread.daemon = True
+    thread.start()
+    active_threads.add(thread.ident)
+
+    # Redirect to job status page
+    return redirect(url_for("job_status", job_id=job_id))
+
+
+
 # Create required templates directory
 os.makedirs(os.path.join(os.path.dirname(__file__), 'templates'), exist_ok=True)
 os.makedirs(os.path.join(os.path.dirname(__file__), 'static'), exist_ok=True)

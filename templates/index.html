@@ -34,7 +34,6 @@
 {% endblock %}
 
 {% block content %}
-<!-- Fixed: Made sure this is hidden by default -->
 <div class="loading-overlay hidden" id="loadingOverlay">
     <div class="spinner-border text-primary mb-3" role="status">
         <span class="visually-hidden">Loading...</span>
@@ -44,7 +43,6 @@
 </div>
 
 <div class="col-lg-8 mx-auto">
-    <!-- Flash messages -->
     {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
             {% for category, message in messages %}
@@ -56,7 +54,6 @@
         {% endif %}
     {% endwith %}
 
-    <!-- Main card -->
     <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center bg-primary text-white">
             <h4 class="mb-0">Analyze Web Content</h4>
@@ -66,7 +63,6 @@
         </div>
         <div class="card-body">
             <form action="/analyze" method="post" enctype="multipart/form-data" id="analysisForm">
-                <!-- Input tabs -->
                 <ul class="nav nav-pills mb-3" id="inputTabs" role="tablist">
                     <li class="nav-item" role="presentation">
                         <button class="nav-link active" id="text-tab" data-bs-toggle="pill" 
@@ -82,46 +78,47 @@
                             <i class="bi bi-file-earmark-text"></i> File Upload
                         </button>
                     </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="local-tab" data-bs-toggle="pill" 
+                                data-bs-target="#local-input" type="button" role="tab" 
+                                aria-controls="local-input" aria-selected="false">
+                            <i class="bi bi-folder"></i> Local Folder
+                        </button>
+                    </li>
                 </ul>
-                
-                <!-- Tab content -->
+
                 <div class="tab-content mb-4" id="inputTabContent">
-                    <!-- Text input tab -->
                     <div class="tab-pane fade show active" id="text-input" role="tabpanel" aria-labelledby="text-tab">
                         <div class="mb-3">
                             <label for="urls" class="form-label">URLs to Analyze</label>
-                            <textarea class="form-control" id="urls" name="urls" rows="5" 
-                                      placeholder="Enter one URL per line..."></textarea>
+                            <textarea class="form-control" id="urls" name="urls" rows="5" placeholder="Enter one URL per line..."></textarea>
                             <div class="form-text">Enter one URL per line, e.g. https://example.com</div>
                         </div>
                     </div>
-                    
-                    <!-- File input tab -->
                     <div class="tab-pane fade" id="file-input" role="tabpanel" aria-labelledby="file-tab">
                         <div class="mb-3">
                             <label for="file" class="form-label">Upload File</label>
                             <input class="form-control" type="file" id="file" name="file" accept=".txt,.csv,.json,.xlsx,.xls">
-                            <div class="form-text">Supported formats: 
-                                <span class="badge bg-secondary">TXT</span> - One URL per line<br>
-                                <span class="badge bg-secondary">CSV</span> - Must have a 'url' column, can include company_name, company_description, industry, etc.<br>
-                                <span class="badge bg-secondary">Excel</span> - Same format as CSV<br>
-                                <span class="badge bg-secondary">JSON</span> - Array of objects with 'url' property
-                            </div>
+                            <div class="form-text">Supported formats: TXT - One URL per line, CSV - Must have a 'url' column, JSON - Array of objects with 'url' property, Excel - Same as CSV</div>
+                        </div>
+                    </div>
+                    <div class="tab-pane fade" id="local-input" role="tabpanel" aria-labelledby="local-tab">
+                        <div class="alert alert-warning">
+                            <i class="bi bi-folder"></i> This will analyze all files in the <code>local_input_files/</code> folder on the server.
+                        </div>
+                        <div class="mb-3">
+                            <button class="btn btn-primary" id="analyzeLocalBtn" type="button">
+                                <i class="bi bi-play-circle"></i> Analyze Local Files
+                            </button>
                         </div>
                     </div>
                 </div>
-                
-                <!-- Prompt selection -->
+
                 <div class="card mt-4">
                     <div class="card-header">
                         <h5 class="card-title mb-0">Analysis Prompts</h5>
                     </div>
                     <div class="card-body">
-                        <div class="alert alert-info">
-                            <i class="bi bi-info-circle me-2"></i>
-                            Select one or more analysis prompts to apply to the content.
-                        </div>
-                        
                         <div class="row">
                             {% for prompt in prompts %}
                                 <div class="col-md-6 col-lg-4 mb-3">
@@ -129,14 +126,13 @@
                                         <input class="form-check-input" type="checkbox" name="prompts" 
                                                id="prompt_{{ prompt.id }}" value="{{ prompt.id }}">
                                         <label class="form-check-label" for="prompt_{{ prompt.id }}">
-                                            {{ prompt.name }}
-                                            <span class="d-block text-muted small">{{ prompt.description }}</span>
+                                            {{ prompt.name }}<br>
+                                            <small class="text-muted">{{ prompt.description }}</small>
                                         </label>
                                     </div>
                                 </div>
                             {% endfor %}
                         </div>
-                        
                         {% if not prompts %}
                             <div class="alert alert-warning">
                                 <i class="bi bi-exclamation-triangle me-2"></i>
@@ -145,50 +141,34 @@
                         {% endif %}
                     </div>
                 </div>
-                
-                <!-- Analysis options -->
+
                 <div class="card mt-4">
                     <div class="card-header">
-                        <h5 class="card-title mb-0">
-                            Advanced Options <small class="text-muted">(Optional)</small>
-                        </h5>
+                        <h5 class="card-title mb-0">Advanced Options <small class="text-muted">(Optional)</small></h5>
                     </div>
                     <div class="card-body">
-                        <!-- Content Type Selection - NEW SECTION -->
                         <div class="mb-4">
                             <label for="default_content_type" class="form-label">Default Content Type:</label>
                             <select class="form-select" id="default_content_type" name="default_content_type">
                                 <option value="auto" selected>Auto-detect from URL</option>
-                                <option value="html">HTML (Web Page)</option>
-                                <option value="pdf">PDF Document</option>
-                                <option value="docx">Word Document (DOCX)</option>
-                                <option value="pptx">PowerPoint Presentation (PPTX)</option>
+                                <option value="html">HTML</option>
+                                <option value="pdf">PDF</option>
+                                <option value="docx">Word (DOCX)</option>
+                                <option value="pptx">PowerPoint (PPTX)</option>
                             </select>
-                            <div class="form-text">
-                                <i class="bi bi-info-circle"></i> The system can now analyze PDFs, Word documents and PowerPoint files directly. 
-                                If set to auto-detect, content type will be determined from the URL extension.
-                            </div>
+                            <div class="form-text">The system can now analyze PDFs, Word, and PowerPoint files directly. Auto-detection will use the file extension.</div>
                         </div>
-
                         <div class="form-check form-switch mb-3">
                             <input class="form-check-input" type="checkbox" id="force_browser" name="force_browser">
-                            <label class="form-check-label" for="force_browser">
-                                Force browser rendering
-                                <span class="d-block text-muted small">Use for JavaScript-heavy websites</span>
-                            </label>
+                            <label class="form-check-label" for="force_browser">Force browser rendering <span class="text-muted small">Use for JavaScript-heavy websites</span></label>
                         </div>
-                        
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" id="premium_proxy" name="premium_proxy">
-                            <label class="form-check-label" for="premium_proxy">
-                                Use premium proxy
-                                <span class="d-block text-muted small">Better for websites that block scrapers</span>
-                            </label>
+                            <label class="form-check-label" for="premium_proxy">Use premium proxy <span class="text-muted small">Better for websites that block scrapers</span></label>
                         </div>
                     </div>
                 </div>
-                
-                <!-- Submit button -->
+
                 <div class="d-grid gap-2 mt-4">
                     <button type="submit" class="btn btn-primary btn-lg">
                         <i class="bi bi-lightning-charge"></i> Analyze Content
@@ -197,175 +177,106 @@
             </form>
         </div>
     </div>
-    
-    <!-- Recent jobs -->
-    {% if recent_jobs %}
-        <div class="card mt-4">
-            <div class="card-header">
-                <h5 class="card-title mb-0">Recent Analysis Jobs</h5>
-            </div>
-            <div class="card-body p-0">
-                <div class="list-group list-group-flush">
-                    {% for job in recent_jobs %}
-                        <a href="/job/{{ job.job_id }}" class="list-group-item list-group-item-action">
-                            <div class="d-flex w-100 justify-content-between">
-                                <h6 class="mb-1">
-                                    {% if job.status == 'completed' %}
-                                        <span class="badge bg-success">Completed</span>
-                                    {% elif job.status == 'running' %}
-                                        <span class="badge bg-primary">Running</span>
-                                    {% elif job.status == 'completed_with_errors' %}
-                                        <span class="badge bg-warning">Completed with Errors</span>
-                                    {% elif job.status == 'failed' %}
-                                        <span class="badge bg-danger">Failed</span>
-                                    {% else %}
-                                        <span class="badge bg-secondary">{{ job.status|capitalize }}</span>
-                                    {% endif %}
-                                    
-                                    {% if job.urls and job.urls|length > 0 %}
-                                        {{ job.urls[0] }}
-                                        {% if job.urls|length > 1 %}
-                                            <span class="text-muted">+ {{ job.urls|length - 1 }} more</span>
-                                        {% endif %}
-                                    {% else %}
-                                        No URL
-                                    {% endif %}
-                                </h6>
-                                <small class="text-muted">{{ job.created_at|format_date }}</small>
-                            </div>
-                            <p class="mb-1 text-muted small">
-                                {{ job.processed_urls|default(0) }}/{{ job.total_urls }} URLs processed
-                                {% if job.prompts %}
-                                    • Prompts: {{ job.prompts|join(', ') }}
-                                {% endif %}
-                            </p>
-                        </a>
-                    {% endfor %}
-                </div>
-            </div>
-        </div>
-    {% endif %}
 </div>
 {% endblock %}
 
 {% block scripts %}
-<!-- Custom scripts -->
 <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        // Hide loading overlay immediately when page loads
+    document.addEventListener('DOMContentLoaded', function () {
         const loadingOverlay = document.getElementById('loadingOverlay');
-        if (loadingOverlay) {
-            loadingOverlay.classList.add('hidden');
-        }
-        
-        // Show loading overlay when form is submitted
         const form = document.getElementById('analysisForm');
-        
+        const fileInput = document.getElementById('file');
+
         if (form) {
-            form.addEventListener('submit', function(e) {
-                // Basic validation
+            form.addEventListener('submit', function (e) {
                 const urlsInput = document.getElementById('urls');
-                const fileInput = document.getElementById('file');
                 const promptCheckboxes = document.querySelectorAll('input[name="prompts"]:checked');
-                
                 const activeTab = document.querySelector('.tab-pane.active');
                 const isTextTab = activeTab.id === 'text-input';
-                
+
                 if (isTextTab && (!urlsInput.value || urlsInput.value.trim() === '')) {
                     e.preventDefault();
                     alert('Please enter at least one URL.');
                     return;
                 }
-                
+
                 if (!isTextTab && (!fileInput.files || fileInput.files.length === 0)) {
                     e.preventDefault();
                     alert('Please select a file to upload.');
                     return;
                 }
-                
+
                 if (promptCheckboxes.length === 0) {
                     e.preventDefault();
                     alert('Please select at least one analysis prompt.');
                     return;
                 }
-                
-                // Show loading overlay
-                if (loadingOverlay) {
-                    loadingOverlay.classList.remove('hidden');
-                }
+
+                loadingOverlay.classList.remove('hidden');
             });
         }
-    });
 
-    // Fallback in case the overlay doesn't hide properly
-    setTimeout(function() {
-        const loadingOverlay = document.getElementById('loadingOverlay');
-        if (loadingOverlay) {
-            loadingOverlay.classList.add('hidden');
-            console.log('Forcibly hiding loading overlay after timeout');
-        }
-    }, 2000);
+        document.getElementById("analyzeLocalBtn").addEventListener("click", function () {
+            const selectedPrompts = Array.from(document.querySelectorAll("input[name='prompts']:checked"))
+                .map(cb => cb.value);
 
-    // Add a debug button that will appear if loading overlay gets stuck
-    setTimeout(function() {
-        const loadingOverlay = document.getElementById('loadingOverlay');
-        if (loadingOverlay && getComputedStyle(loadingOverlay).display !== 'none' && 
-            !loadingOverlay.classList.contains('hidden')) {
-            
-            const debugButton = document.createElement('button');
-            debugButton.innerHTML = 'Click to Hide Loading Screen';
-            debugButton.className = 'btn btn-danger mt-3';
-            debugButton.onclick = function() {
-                loadingOverlay.classList.add('hidden');
-                this.remove();
-            };
-            
-            loadingOverlay.appendChild(debugButton);
-        }
-    }, 5000);
+            if (selectedPrompts.length === 0) {
+                alert("Please select at least one prompt before analyzing local files.");
+                return;
+            }
 
-// Add this to the bottom of your existing scripts
-document.addEventListener('DOMContentLoaded', function() {
-    const fileTab = document.getElementById('file-tab');
-    const fileInput = document.getElementById('file');
-    
-    // When file tab is clicked, focus on file input
-    if (fileTab) {
-        fileTab.addEventListener('click', function() {
-            setTimeout(() => {
-                if (fileInput) fileInput.focus();
-            }, 100);
+            const query = selectedPrompts.map(p => `prompt=${encodeURIComponent(p)}`).join("&");
+            loadingOverlay.classList.remove("hidden");
+            window.location.href = `/analyze-local-files?${query}`;
         });
-    }
-    
-    // Make sure file uploads aren't blocked by text validation
-    const form = document.getElementById('analysisForm');
-    if (form) {
-        const originalSubmitHandler = form.onsubmit;
-        form.onsubmit = function(e) {
-            const activeTab = document.querySelector('.tab-pane.active');
-            const isFileTab = activeTab && activeTab.id === 'file-input';
-            
-            // If we have a file and we're on the file tab, allow form submission
-            if (isFileTab && fileInput && fileInput.files && fileInput.files.length > 0) {
-                console.log("File selected, allowing submission");
-                // Still need to check for prompt selection
-                const promptCheckboxes = document.querySelectorAll('input[name="prompts"]:checked');
-                if (promptCheckboxes.length === 0) {
-                    e.preventDefault();
-                    alert('Please select at least one analysis prompt.');
-                    return false;
-                }
-                return true;
-            }
-            
-            // Otherwise use the regular validation
-            if (originalSubmitHandler) {
-                return originalSubmitHandler.call(this, e);
-            }
-        };
-    }
-});
-
+    });
 </script>
+{% if recent_jobs %}
+<div class="card mt-4">
+    <div class="card-header">
+        <h5 class="card-title mb-0">Recent Analysis Jobs</h5>
+    </div>
+    <div class="card-body p-0">
+        <div class="list-group list-group-flush">
+            {% for job in recent_jobs %}
+                <a href="/job/{{ job.job_id }}" class="list-group-item list-group-item-action">
+                    <div class="d-flex w-100 justify-content-between">
+                        <h6 class="mb-1">
+                            {% if job.status == 'completed' %}
+                                <span class="badge bg-success">Completed</span>
+                            {% elif job.status == 'running' %}
+                                <span class="badge bg-primary">Running</span>
+                            {% elif job.status == 'completed_with_errors' %}
+                                <span class="badge bg-warning">Completed with Errors</span>
+                            {% elif job.status == 'failed' %}
+                                <span class="badge bg-danger">Failed</span>
+                            {% else %}
+                                <span class="badge bg-secondary">{{ job.status|capitalize }}</span>
+                            {% endif %}
+
+                            {% if job.urls and job.urls|length > 0 %}
+                                {{ job.urls[0] }}
+                                {% if job.urls|length > 1 %}
+                                    <span class="text-muted">+ {{ job.urls|length - 1 }} more</span>
+                                {% endif %}
+                            {% else %}
+                                No URL
+                            {% endif %}
+                        </h6>
+                        <small class="text-muted">{{ job.created_at|format_date }}</small>
+                    </div>
+                    <p class="mb-1 text-muted small">
+                        {{ job.processed_urls|default(0) }}/{{ job.total_urls }} URLs processed
+                        {% if job.prompts %}
+                            • Prompts: {{ job.prompts|join(', ') }}
+                        {% endif %}
+                    </p>
+                </a>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+
 {% endblock %}
