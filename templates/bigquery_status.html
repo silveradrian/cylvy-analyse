@@ -1,0 +1,81 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="container mt-5">
+    <div class="card">
+        <div class="card-header {% if status.enabled %}bg-success{% else %}bg-warning{% endif %} text-white">
+            <h4>BigQuery Analytics Storage Status</h4>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <h5>Current Status:</h5>
+                    <p>
+                        {% if status.enabled %}
+                            <span class="badge bg-success">Enabled</span>
+                            <span class="text-success">Analytics data is being stored in BigQuery.</span>
+                        {% else %}
+                            <span class="badge bg-warning">Disabled</span>
+                            <span class="text-warning">Analytics data is not being stored.</span>
+                        {% endif %}
+                    </p>
+                    
+                    {% if status.error %}
+                    <div class="alert alert-warning">
+                        <strong>Authentication Error:</strong>
+                        <p>{{ status.error }}</p>
+                    </div>
+                    {% endif %}
+                </div>
+                
+                <div class="col-md-6">
+                    <h5>Actions:</h5>
+                    {% if status.enabled %}
+                        <form action="{{ url_for('disable_bigquery') }}" method="post">
+                            <button type="submit" class="btn btn-warning">
+                                Disable BigQuery Storage
+                            </button>
+                        </form>
+                        <small class="text-muted mt-2">
+                            This will disable analytics storage for this session.
+                        </small>
+                    {% else %}
+                        <form action="{{ url_for('enable_bigquery') }}" method="post">
+                            <button type="submit" class="btn btn-success">
+                                Try to Enable BigQuery Storage
+                            </button>
+                        </form>
+                        <small class="text-muted mt-2">
+                            This will attempt to authenticate with BigQuery.
+                        </small>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <hr />
+            
+            <div class="mt-4">
+                <h5>Authentication Help:</h5>
+                <ol class="list-group list-group-numbered">
+                    <li class="list-group-item">Make sure you have the Google Cloud SDK installed</li>
+                    <li class="list-group-item">
+                        Run <code>gcloud auth application-default login</code> in your terminal
+                    </li>
+                    <li class="list-group-item">
+                        If using a service account key, ensure the GOOGLE_APPLICATION_CREDENTIALS 
+                        environment variable is set to the path of your service account key file.
+                    </li>
+                    <li class="list-group-item">
+                        Restart the application after authentication
+                    </li>
+                </ol>
+            </div>
+        </div>
+        <div class="card-footer">
+            <a href="{{ url_for('index') }}" class="btn btn-primary">
+                Return to Dashboard
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %}

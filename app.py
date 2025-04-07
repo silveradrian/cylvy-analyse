@@ -6,7 +6,6 @@ This is the main Flask application that provides a web interface
 for content analysis using OpenAI API and custom prompt configurations.
 """
 
-
 import pytz
 import asyncio
 import os
@@ -18,7 +17,10 @@ import threading
 import pandas as pd
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from flask import Flask, request, jsonify, render_template, redirect, url_for, send_file, Response, flash
+from flask import (
+    Flask, request, jsonify, render_template, redirect, url_for, 
+    send_file, Response, flash, session
+)
 # Import our custom modules
 from db_manager import db
 from analyzer import ContentAnalyzer
@@ -456,6 +458,62 @@ def format_date(value, format='%Y-%m-%d %H:%M:%S'):
 
 
 
+
+def restart_job_processing(job_id):
+    """Restart a paused job."""
+    try:
+        # Get job details
+        job = db.get_job(job_id)
+        if not job:
+            logger.error(f"Job {job_id} not found for restart")
+            return
+            
+        # Get unprocessed URLs
+        results = db.get_results_for_job(job_id)
+        processed_urls = [r.get('url') for r in results if r.get('status') != 'paused']
+        
+        # Get list of all URLs in job
+        all_urls = json.loads(job.get('urls', '[]'))
+        
+        # Filter for unprocessed URLs
+        unprocessed_urls = [url for url in all_urls if url not in processed_urls]
+        
+        if not unprocessed_urls:
+            logger.info(f"No unprocessed URLs found for job {job_id}")
+            db.update_job_status(
+                job_id=job_id,
+                status='completed',
+                completed_at=datetime.now().isoformat()
+            )
+            return
+            
+        # Create URL data list
+        url_data_list = [{'url': url} for url in unprocessed_urls]
+        
+        # Get prompts
+        prompts = json.loads(job.get('prompt_names', '[]'))
+        
+        # Start processing in a background thread
+        analyzer = ContentAnalyzer()
+        
+        # Set the current job ID and continue_without_bigquery flag
+        analyzer._current_job_id = job_id
+        analyzer._continue_without_bigquery = True
+        
+        thread = threading.Thread(
+            target=process_urls_in_background,
+            args=(job_id, url_data_list, prompts)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        logger.info(f"Restarted job {job_id} with {len(unprocessed_urls)} URLs")
+        
+    except Exception as e:
+        logger.error(f"Error restarting job {job_id}: {str(e)}")
+
+
+
 @app.template_filter('get')
 def get_attribute(obj, attr, default=""):
     """Safely get an attribute or key from an object/dict."""
@@ -641,6 +699,223 @@ def get_status_description(status):
     }
     return descriptions.get(status, f"Status: {status}")
 
+
+# Global variable to track if BigQuery has been initialized
+_bigquery_initialized = False
+
+def init_bigquery():
+    """Initialize BigQuery check when the application starts."""
+    global _bigquery_initialized
+    
+    # Only run once
+    if _bigquery_initialized:
+        return
+    _bigquery_initialized = True
+    
+    try:
+        from bigquery_content_store import BigQueryContentStore
+        
+        # Initialize store but don't auto-initialize BigQuery
+        store = BigQueryContentStore(auto_initialize=False)
+        
+        # Store in app context for reuse
+        app.bigquery_store = store
+        
+        # Run check in a separate thread to avoid blocking
+        import asyncio
+        import threading
+        
+        def run_auth_check():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                result = loop.run_until_complete(store.check_authentication())
+                
+                # Update app config
+                with app.app_context():
+                    app.config['BIGQUERY_ENABLED'] = result
+                
+                # We can't flash messages here since we're outside a request context
+                logger.info(f"BigQuery authentication {'successful' if result else 'failed'}")
+                
+                if not result:
+                    auth_status, error_msg = store.get_auth_status()
+                    logger.warning(f"BigQuery authentication failed: {error_msg}")
+                
+            except Exception as e:
+                logger.error(f"Error in BigQuery auth check thread: {str(e)}")
+                with app.app_context():
+                    app.config['BIGQUERY_ENABLED'] = False
+        
+        # Run in background thread
+        thread = threading.Thread(target=run_auth_check)
+        thread.daemon = True
+        thread.start()
+        
+    except Exception as e:
+        logger.error(f"Error checking BigQuery auth: {str(e)}")
+        app.config['BIGQUERY_ENABLED'] = False
+
+
+@app.before_request
+def check_bigquery_status():
+    """Check BigQuery status before each request and display info if needed."""
+    global _bigquery_initialized
+    
+    # Initialize BigQuery if not done yet
+    if not _bigquery_initialized:
+        init_bigquery()
+    
+    # Only show messages once per session
+    if not session.get('bigquery_status_shown'):
+        # Get store from app context if available
+        store = getattr(app, 'bigquery_store', None)
+        
+        if store:
+            authenticated = app.config.get('BIGQUERY_ENABLED', False)
+            _, error_msg = store.get_auth_status() if hasattr(store, 'get_auth_status') else (False, None)
+            
+            if authenticated:
+                flash("BigQuery authentication successful. Analytics storage is enabled.", "success")
+            else:
+                flash(f"BigQuery storage disabled: {error_msg or 'Unknown error'}", "warning")
+                flash("You can continue without BigQuery storage.", "info")
+        
+        # Mark as shown in session
+        session['bigquery_status_shown'] = True
+
+
+@app.route('/bigquery/status', methods=['GET'])
+def bigquery_status_page():
+    """Show BigQuery status and authentication options."""
+    # Get current status directly from BigQuery store
+    try:
+        # Get store from app context
+        store = getattr(app, 'bigquery_store', None)
+        
+        # Set up the status data
+        status = {
+            "enabled": app.config.get('BIGQUERY_ENABLED', False),
+            "checked": True,
+            "error": None
+        }
+        
+        # If we have a store, get more accurate info
+        if store and hasattr(store, 'get_auth_status'):
+            authenticated, error_msg = store.get_auth_status()
+            status["enabled"] = authenticated
+            status["error"] = error_msg
+            
+        return render_template(
+            'bigquery_status.html',
+            status=status,
+            page_title="BigQuery Status"
+        )
+    except Exception as e:
+        logger.error(f"Error showing BigQuery status: {str(e)}")
+        return render_template(
+            'bigquery_status.html',
+            status={"enabled": False, "checked": True, "error": str(e)},
+            page_title="BigQuery Status"
+        )
+
+
+@app.route('/bigquery/disable', methods=['POST'])
+def disable_bigquery():
+    """Disable BigQuery storage globally."""
+    try:
+        # Set app config
+        app.config['BIGQUERY_ENABLED'] = False
+        
+        # Set in session too
+        session['bigquery_disabled'] = True
+        
+        # Also update any running BigQueryContentStore instances
+        store = getattr(app, 'bigquery_store', None)
+        if store and hasattr(store, 'disable_storage'):
+            store.disable_storage()
+        
+        # Resume any paused jobs
+        try:
+            paused_jobs = db.get_jobs_by_status('paused')
+            for job in paused_jobs:
+                job_id = job.get('job_id')
+                if job_id:
+                    # Check if this job was paused due to BigQuery auth
+                    if job.get('error_message') and 'bigquery' in job.get('error_message', '').lower():
+                        # Resume the job
+                        db.update_job_status(
+                            job_id=job_id, 
+                            status='running',
+                            error_message=None
+                        )
+                        
+                        # Mark to continue without BigQuery for this job
+                        session[f"continue_without_bigquery_{job_id}"] = True
+                        
+                        # Log the action
+                        logger.info(f"Resuming job {job_id} after BigQuery disable")
+        except Exception as e:
+            logger.error(f"Error resuming paused jobs: {str(e)}")
+            
+        flash("BigQuery storage has been disabled globally. Any paused jobs will be resumed.", "info")
+    except Exception as e:
+        flash(f"Error disabling BigQuery: {str(e)}", "danger")
+        
+    return redirect(url_for('bigquery_status_page'))
+
+
+@app.route('/bigquery/enable', methods=['POST'])
+def enable_bigquery():
+    """Try to enable BigQuery storage."""
+    try:
+        # Get existing store or create a new one
+        store = getattr(app, 'bigquery_store', None)
+        if not store:
+            from bigquery_content_store import BigQueryContentStore
+            store = BigQueryContentStore(auto_initialize=False)
+            app.bigquery_store = store
+        
+        # Check authentication asynchronously
+        import asyncio
+        
+        # Get or create event loop
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # No event loop in this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+        # Run authentication check
+        authenticated = loop.run_until_complete(store.check_authentication())
+        
+        # Update app config
+        app.config['BIGQUERY_ENABLED'] = authenticated
+        
+        # Remove session flags
+        if authenticated and 'bigquery_disabled' in session:
+            del session['bigquery_disabled']
+        
+        # Also reset the "shown" flag so we show it again
+        if 'bigquery_status_shown' in session:
+            del session['bigquery_status_shown']
+            
+        if authenticated:
+            flash("BigQuery authentication successful. Storage is now enabled.", "success")
+        else:
+            _, error_msg = store.get_auth_status()
+            flash(f"BigQuery authentication failed: {error_msg}", "warning")
+            
+    except Exception as e:
+        flash(f"Error enabling BigQuery: {str(e)}", "danger")
+        app.config['BIGQUERY_ENABLED'] = False
+        
+    return redirect(url_for('bigquery_status_page'))
+
+
+# Add this at the end of your app.py file after app is created
+init_bigquery()
 
 
 @app.route('/analyze', methods=['POST'])
@@ -1155,7 +1430,7 @@ def get_status_description(status):
 
 if __name__ == '__main__':
     # Run the Flask app
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 8000))
     debug = os.environ.get("FLASK_ENV") == "development"
     
     logger.info(f"Starting Flask app on port {port} (debug={debug})")

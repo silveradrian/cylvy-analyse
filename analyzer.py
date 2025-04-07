@@ -1,4 +1,5 @@
 from __future__ import annotations  # This must be the first import!
+from utils import extract_structured_fields
 from db_manager import db
 # Standard library imports
 import asyncio
@@ -450,7 +451,7 @@ class ContentAnalyzer:
 
     async def scrape_url_async(self, url: str, content_type: str = "html", 
                     force_browser: bool = False, retry_attempt: int = 0, 
-                    timeout: int = 100) -> Dict[str, Any]:
+                    timeout: int = 100, premium_parameters: Dict = None) -> Dict[str, Any]:
         """
         Asynchronously scrape content from a URL using ScrapingBee's API or document extraction methods.
         Includes automatic retry with enhanced options on failure and request timeout.
@@ -461,6 +462,7 @@ class ContentAnalyzer:
             force_browser: Whether to force browser rendering for HTML
             retry_attempt: Current retry attempt number
             timeout: Timeout in seconds for the API request (default: 100)
+            premium_parameters: Additional parameters for enhanced scraping
             
         Returns:
             Dictionary containing scraping results
@@ -536,7 +538,8 @@ class ContentAnalyzer:
                             "url": url,
                             "status": "scrape_error",
                             "content_type": detected_type,
-                            "retry_attempts": retry_attempt
+                            "retry_attempts": retry_attempt,
+                            "response_text": response.text[:500] if hasattr(response, 'text') else ""
                         }
                     
                     # Create a temporary file with appropriate extension
@@ -595,8 +598,12 @@ class ContentAnalyzer:
                         "retry_attempts": retry_attempt
                     }
             
-            # Regular HTML scraping with ScrapingBee follows...
+            # Regular HTML scraping with ScrapingBee follows
             logger.info(f"Async scraping HTML URL with ScrapingBee: {url}{' (retry attempt '+str(retry_attempt)+')' if retry_attempt > 0 else ''}")
+            
+            # Initialize premium parameters if not provided
+            if premium_parameters is None:
+                premium_parameters = {}
             
             # Reload the API key each time
             scrapingbee_api_key = os.environ.get("SCRAPINGBEE_API_KEY", "")
@@ -618,16 +625,29 @@ class ContentAnalyzer:
             # On retry or if force_browser is True, use enhanced options
             use_enhanced_options = force_browser or retry_attempt > 0
             
-            # Set parameters based on retry attempt level
+            # Set parameters based on retry attempt level and premium parameters
             params = {
-                "render_js": "true" if use_enhanced_options else "false",
-                "premium_proxy": "true" if use_enhanced_options else "false"
+                "render_js": str(premium_parameters.get("render_js", use_enhanced_options)).lower(),
+                "premium_proxy": str(premium_parameters.get("premium_proxy", use_enhanced_options)).lower()
             }
             
-            # On second retry, try stealth proxy as a last resort
-            if retry_attempt >= 2:
+            # Add optional premium parameters if provided
+            for param_name in ["stealth_proxy", "country_code", "wait", "block_resources", "return_page_source"]:
+                if param_name in premium_parameters:
+                    params[param_name] = premium_parameters[param_name]
+            
+            # On second retry or if specified in premium parameters, try stealth proxy as a last resort
+            if retry_attempt >= 2 or premium_parameters.get("stealth_proxy"):
                 params["stealth_proxy"] = "true"
-                logger.info(f"Using stealth proxy for final retry attempt on {url}")
+                logger.info(f"Using stealth proxy for {url}")
+                
+            # Add wait parameter for better JavaScript rendering if not already set
+            if "wait" not in params and use_enhanced_options:
+                params["wait"] = 3000  # Wait 3 seconds for JS execution
+            
+            # Add country_code for difficult sites if not already set
+            if "country_code" not in params and retry_attempt >= 1:
+                params["country_code"] = "us"  # Use US IP address
             
             logger.info(f"Scraping {url} with params: {params}, timeout: {timeout}s")
             
@@ -667,6 +687,9 @@ class ContentAnalyzer:
                 error_message = f"ScrapingBee error: {response.status_code} - {clean_error}"
                 logger.error(error_message)
                 
+                # Also store a sample of the HTML response for debugging (truncated)
+                html_sample = response.text[:500] if hasattr(response, 'text') else ""
+                
                 # Check if this is an error that would benefit from a retry with enhanced options
                 if retry_attempt < 2 and not (params.get("render_js") == "true" and params.get("premium_proxy") == "true"):
                     retry_error_indicators = [
@@ -674,7 +697,9 @@ class ContentAnalyzer:
                         "try with render_js=True", 
                         "try with premium_proxy=True",
                         "blocked", "captcha", "cloudflare",
-                        "Error with your request"
+                        "Error with your request",
+                        "please enable js", "javascript required",
+                        "bot protection", "ddos protection"
                     ]
                     
                     should_retry = any(indicator in str(response.status_code) for indicator in ["403", "500", "429", "404"])
@@ -686,18 +711,71 @@ class ContentAnalyzer:
                     if should_retry:
                         logger.warning(f"Retrying {url} with enhanced options (attempt {retry_attempt+1})")
                         await asyncio.sleep(1 * (retry_attempt + 1))  # Progressive delay
-                        return await self.scrape_url_async(url, content_type, True, retry_attempt + 1, timeout)
+                        
+                        # Create enhanced premium parameters for retry
+                        enhanced_params = {
+                            "premium_proxy": True,
+                            "stealth_proxy": retry_attempt >= 1,  # Use stealth proxy on second retry
+                            "render_js": True,
+                            "country_code": "us",
+                            "wait": 5000,  # Wait 5 seconds for JS execution
+                            "return_page_source": True
+                        }
+                        
+                        return await self.scrape_url_async(
+                            url, 
+                            content_type, 
+                            True,  # Force browser 
+                            retry_attempt + 1, 
+                            timeout,
+                            premium_parameters=enhanced_params
+                        )
                 
                 # Return the error if we've exhausted retries or enhanced options didn't help
                 return {
                     "error": error_message,
                     "url": url,
                     "status": "scrape_error",
-                    "retry_attempts": retry_attempt
+                    "retry_attempts": retry_attempt,
+                    "html": html_sample,  # Add sample of HTML response
+                    "response_text": clean_error  # Add the sanitized error
                 }
             
             # Process HTML content
             html_content = response.content.decode('utf-8', errors='ignore')
+            
+            # Check for common anti-bot detection signs in the response
+            anti_bot_indicators = [
+                "captcha", "cloudflare", "please enable javascript",
+                "access denied", "automated request", "bot detection",
+                "security check", "browser check", "ddos protection"
+            ]
+            
+            if any(indicator.lower() in html_content.lower() for indicator in anti_bot_indicators) and retry_attempt < 2:
+                logger.warning(f"Anti-bot protection detected in response for {url}. Retrying with enhanced parameters.")
+                
+                # Create enhanced premium parameters for retry
+                enhanced_params = {
+                    "premium_proxy": True,
+                    "stealth_proxy": True,
+                    "render_js": True,
+                    "country_code": "us",
+                    "wait": 5000,  # Wait 5 seconds for JS execution
+                    "block_resources": False,  # Load all resources
+                    "return_page_source": True  # Get full HTML
+                }
+                
+                # Delay before retry
+                await asyncio.sleep(2 * (retry_attempt + 1))
+                
+                return await self.scrape_url_async(
+                    url, 
+                    content_type, 
+                    True,  # Force browser 
+                    retry_attempt + 1, 
+                    timeout,
+                    premium_parameters=enhanced_params
+                )
             
             # Parse with BeautifulSoup
             soup = BeautifulSoup(html_content, 'html.parser')
@@ -786,8 +864,25 @@ class ContentAnalyzer:
             # Check if the content seems too short (likely blocked or empty page)
             if word_count < 50 and retry_attempt < 2 and not use_enhanced_options:
                 logger.warning(f"Content for {url} seems too short ({word_count} words). Retrying with enhanced options.")
+                
+                # Create enhanced premium parameters for retry
+                enhanced_params = {
+                    "premium_proxy": True,
+                    "stealth_proxy": retry_attempt >= 1,
+                    "render_js": True,
+                    "country_code": "us",
+                    "wait": 5000  # Wait 5 seconds for JS execution
+                }
+                
                 await asyncio.sleep(1)
-                return await self.scrape_url_async(url, content_type, True, retry_attempt + 1, timeout)
+                return await self.scrape_url_async(
+                    url, 
+                    content_type, 
+                    True,  # Force browser
+                    retry_attempt + 1, 
+                    timeout,
+                    premium_parameters=enhanced_params
+                )
             
             result = {
                 "url": url,
@@ -820,7 +915,22 @@ class ContentAnalyzer:
             if retry_attempt < 2 and not force_browser and any(err in str(e).lower() for err in connection_errors):
                 logger.warning(f"Connection error for {url}. Retrying with enhanced options after delay.")
                 await asyncio.sleep(2 * (retry_attempt + 1))  # Progressive delay for connection issues
-                return await self.scrape_url_async(url, content_type, True, retry_attempt + 1, timeout)
+                
+                # Create enhanced premium parameters for retry
+                enhanced_params = {
+                    "premium_proxy": True,
+                    "stealth_proxy": retry_attempt >= 1,
+                    "render_js": True
+                }
+                
+                return await self.scrape_url_async(
+                    url, 
+                    content_type, 
+                    True,  # Force browser 
+                    retry_attempt + 1, 
+                    timeout,
+                    premium_parameters=enhanced_params
+                )
                 
             return {
                 "error": str(e),
@@ -934,12 +1044,13 @@ class ContentAnalyzer:
         return processed_results
     
  
-    # Then modify the process_url_async method:
+   
     async def process_url_async(self, url: str, prompt_names: List[str], 
-                          company_info: Optional[Dict[str, Any]] = None,
-                          content_type: str = "html", 
-                          force_browser: bool = False,
-                          job_id: str = None) -> Dict[str, Any]:
+                              company_info: Optional[Dict[str, Any]] = None,
+                              content_type: str = "html", 
+                              force_browser: bool = False,
+                              job_id: str = None,
+                              max_retry_attempts: int = 2) -> Dict[str, Any]:
         """
         Asynchronously process a URL by scraping content and analyzing it.
         
@@ -950,20 +1061,135 @@ class ContentAnalyzer:
             content_type: Content type (html, pdf, etc.)
             force_browser: Whether to force browser-based scraping
             job_id: Optional job ID for tracking related requests
+            max_retry_attempts: Maximum number of retry attempts for missing structured data
             
         Returns:
             Dictionary containing processing results
         """
+        # Import the extract_structured_fields function
+        from utils import extract_structured_fields
+        
         # Initialize BigQueryContentStore if not already done
         if not hasattr(self, 'content_store'):
             try:
                 from bigquery_content_store import BigQueryContentStore
                 self.content_store = BigQueryContentStore()
+                # Test BigQuery authentication early
+                if hasattr(self.content_store, 'check_authentication'):
+                    is_authenticated = await self.content_store.check_authentication()
+                    if not is_authenticated:
+                        # Store authentication state in class variable
+                        self._bigquery_auth_failed = True
+                        
+                        # If we're in a flask context, flash a message
+                        try:
+                            from flask import flash, session
+                            flash("BigQuery authentication failed. Please re-authenticate or disable BigQuery storage.", "warning")
+                            # Store in session that auth failed for this job
+                            if job_id:
+                                session[f"bigquery_auth_failed_{job_id}"] = True
+                        except (ImportError, RuntimeError):
+                            # Not in flask context or flask not available
+                            pass
+                        
+                        # Update job status if possible
+                        if job_id and hasattr(self, 'db'):
+                            try:
+                                await self.db.update_job_status(
+                                    job_id=job_id,
+                                    status="paused",
+                                    error_message="BigQuery authentication required"
+                                )
+                            except Exception:
+                                pass
+                        
+                        logger.warning(f"BigQuery authentication failed for job {job_id}. Processing paused.")
+                        return {
+                            "url": url,
+                            "status": "paused",
+                            "error": "BigQuery authentication required",
+                            "job_id": job_id,
+                            "requires_action": "bigquery_auth",
+                            "created_at": datetime.now().isoformat()
+                        }
+                
             except ImportError:
                 logger.warning("BigQueryContentStore not available - BigQuery integration disabled")
                 self.content_store = None
+            except Exception as e:
+                # If BigQuery initialization fails with auth error
+                if "authentication" in str(e).lower() or "credentials" in str(e).lower() or "permission" in str(e).lower():
+                    self._bigquery_auth_failed = True
+                    logger.warning(f"BigQuery authentication error: {str(e)}")
+                    
+                    # If we're in a flask context, flash a message
+                    try:
+                        from flask import flash, session
+                        flash(f"BigQuery authentication failed: {str(e)}. Please re-authenticate.", "warning")
+                        # Store in session that auth failed
+                        if job_id:
+                            session[f"bigquery_auth_failed_{job_id}"] = True
+                    except (ImportError, RuntimeError):
+                        # Not in flask context or flask not available
+                        pass
+                    
+                    # Update job status if possible
+                    if job_id and hasattr(self, 'db'):
+                        try:
+                            await self.db.update_job_status(
+                                job_id=job_id,
+                                status="paused",
+                                error_message=f"BigQuery authentication error: {str(e)}"
+                            )
+                        except Exception:
+                            pass
+                    
+                    return {
+                        "url": url,
+                        "status": "paused",
+                        "error": f"BigQuery authentication error: {str(e)}",
+                        "job_id": job_id,
+                        "requires_action": "bigquery_auth",
+                        "created_at": datetime.now().isoformat()
+                    }
+                else:
+                    logger.warning(f"Error initializing BigQueryContentStore: {str(e)}")
+                    self.content_store = None
         
-        # NEW: Try to get job_id from instance attribute if not provided
+        # Check if there's a stored auth failure
+        if hasattr(self, '_bigquery_auth_failed') and self._bigquery_auth_failed:
+            # Check if the user has opted to continue without BigQuery
+            if hasattr(self, '_continue_without_bigquery') and self._continue_without_bigquery:
+                logger.info("Continuing processing without BigQuery storage as per user preference")
+                self.content_store = None
+            else:
+                # If we're in a flask context, check session
+                try:
+                    from flask import session
+                    # If user has opted to continue without BigQuery for this job
+                    if job_id and session.get(f"continue_without_bigquery_{job_id}", False):
+                        logger.info("Continuing processing without BigQuery storage as per session preference")
+                        self.content_store = None
+                        self._continue_without_bigquery = True
+                    else:
+                        # Still paused waiting for user action
+                        logger.warning(f"Processing still paused for BigQuery authentication for job {job_id}")
+                        return {
+                            "url": url,
+                            "status": "paused",
+                            "error": "Waiting for BigQuery authentication or user decision",
+                            "job_id": job_id,
+                            "requires_action": "bigquery_auth",
+                            "created_at": datetime.now().isoformat()
+                        }
+                except (ImportError, RuntimeError):
+                    # Not in flask context or flask not available
+                    # Default to continuing without BigQuery in non-web contexts
+                    logger.info("Non-web context detected, continuing without BigQuery storage")
+                    self.content_store = None
+                    self._continue_without_bigquery = True
+        
+        # Try to get job_id from instance attribute if not provided
         if not job_id and hasattr(self, '_current_job_id'):
             job_id = self._current_job_id
             logger.info(f"Using job_id from instance attribute: {job_id}")
@@ -982,14 +1208,51 @@ class ContentAnalyzer:
             "scrape_time": 0,
             "analysis_time": 0,
             "total_time": 0,
-            "analysis_results": {}
+            "analysis_results": {},
+            "retry_info": {}  # Track retry information
         }
         
         start_time = time.time()
         
-        # Step 1: Scrape the URL
+        # Step 1: Scrape the URL with enhanced anti-bot detection handling
         try:
+            # First try: Standard parameters
             content_result = await self.scrape_url_async(url, content_type, force_browser)
+            
+            # Check for common anti-bot detection signs in the error message
+            if content_result.get("status") != "success":
+                error_msg = str(content_result.get("error", "")).lower()
+                response_text = content_result.get("response_text", "").lower() if hasattr(content_result, "response_text") else ""
+                html_response = content_result.get("html", "").lower() if hasattr(content_result, "html") else ""
+                
+                bot_detection_signs = [
+                    "403", "forbidden", "captcha", "cloudflare", "ddos", "protection",
+                    "javascript", "enable js", "browser check", "security check",
+                    "access denied", "automated request", "blocked"
+                ]
+                
+                is_bot_protection = any(sign in error_msg for sign in bot_detection_signs) or \
+                                   any(sign in response_text for sign in bot_detection_signs) or \
+                                   any(sign in html_response for sign in bot_detection_signs)
+                
+                # If bot protection detected, retry with enhanced parameters
+                if is_bot_protection:
+                    logger.warning(f"Bot protection detected for {url}. Retrying with premium parameters.")
+                    
+                    # Use premium parameters for retry
+                    content_result = await self.scrape_url_async(
+                        url, 
+                        content_type, 
+                        force_browser=True,  # Force browser rendering 
+                        premium_parameters={
+                            "premium_proxy": True,
+                            "stealth_proxy": True,
+                            "country_code": "us",  # Use US IP
+                            "wait": 5000,  # Wait 5 seconds for JS execution
+                            "block_resources": False,  # Load all resources
+                            "return_page_source": True  # Get full HTML
+                        }
+                    )
         except Exception as e:
             logger.error(f"Error in async scraping for {url}: {str(e)}")
             content_result = {
@@ -1007,7 +1270,7 @@ class ContentAnalyzer:
             })
             
             # Store failed scrape in BigQuery if enabled
-            if hasattr(self, 'content_store') and self.content_store and self.content_store.enable_storage:
+            if hasattr(self, 'content_store') and self.content_store and getattr(self.content_store, 'enable_storage', False):
                 try:
                     # Use the job_id directly here too
                     job_id_to_use = job_id if job_id else result.get("job_id")
@@ -1025,7 +1288,12 @@ class ContentAnalyzer:
                         company_info=company_info
                     )
                 except Exception as e:
-                    logger.error(f"Error storing failed scrape in BigQuery: {str(e)}")
+                    if "authentication" in str(e).lower() or "credentials" in str(e).lower():
+                        logger.warning(f"BigQuery authentication error while storing failed scrape: {str(e)}")
+                        # Don't halt processing for a BigQuery auth error on a failed scrape
+                        # Just continue without storing this failed result
+                    else:
+                        logger.error(f"Error storing failed scrape in BigQuery: {str(e)}")
             
             return result
         
@@ -1037,8 +1305,23 @@ class ContentAnalyzer:
             "scrape_time": content_result.get("scrape_time", 0)
         })
         
-        # Step 2: Analyze with each requested prompt
+        # Step 2: Preprocess content before analysis
         content_text = content_result.get("text", "")
+        
+        # Validate content
+        if not content_text or len(content_text.strip()) < 50:
+            logger.warning(f"Content too short for {url}: {len(content_text)} chars")
+            result.update({
+                "status": "scrape_error",
+                "error": "Content too short or empty",
+                "total_time": time.time() - start_time
+            })
+            return result
+        
+        # Apply content preprocessing for better analysis results
+        content_text = preprocess_content(content_text)
+        
+        # Step 3: Analyze with each requested prompt
         api_tokens = 0
         structured_data = {}
         
@@ -1050,69 +1333,206 @@ class ContentAnalyzer:
                 }
                 continue
             
-            try:
-                # Perform analysis asynchronously
-                prompt_config = prompt_configs[prompt_name]
-                analysis_result = await self.analyze_with_prompt_async(
-                    content_text, prompt_config, company_info
-                )
-                
-                # Check for errors
-                if "error" in analysis_result:
-                    result["analysis_results"][prompt_name] = {
-                        "error": analysis_result["error"]
-                    }
-                    continue
-                
-                # Extract structured data from analysis text with delimiter format
-                analysis_text = analysis_result.get("analysis", "")
-                extracted_fields = {}
-                
-                # Look for field||| or field ||| patterns in the text
-                for line in analysis_text.split('\n'):
-                    if '|||' in line:
-                        parts = line.split('|||', 1)  # Split on first occurrence only
-                        if len(parts) == 2:
-                            field_name = parts[0].strip()
-                            field_value = parts[1].strip()
+            # Get prompt configuration
+            prompt_config = prompt_configs[prompt_name]
+            
+            # Initialize retry tracking for this prompt
+            retry_attempts = 0
+            has_structured_data = False
+            retry_delay = 2  # Initial delay in seconds
+            
+            # Determine the appropriate prefix based on the prompt name
+            prefix = "ca"  # Default prefix for content analysis
+            if "content_analysis" in prompt_name.lower():
+                prefix = "ca"
+            elif "competitive_research" in prompt_name.lower():
+                prefix = "cr"
+            elif "pain_assessment" in prompt_name.lower():
+                prefix = "pa"
+            elif "sales_intelligence" in prompt_name.lower():
+                prefix = "si"
+            
+            # Keep trying until we get structured data or hit max retries
+            while retry_attempts <= max_retry_attempts:
+                try:
+                    # If this is a retry, log it and wait
+                    if retry_attempts > 0:
+                        logger.info(f"Retrying analysis for {url} with prompt '{prompt_name}' (attempt {retry_attempts}/{max_retry_attempts})")
+                        await asyncio.sleep(retry_delay)
+                        # Increase delay for next attempt (exponential backoff)
+                        retry_delay *= 1.5
+                    
+                    # Check if content is too long for the model
+                    if len(content_text) > 25000:
+                        # For long content, use content chunking
+                        logger.info(f"Content too long ({len(content_text)} chars), using chunking strategy")
+                        analysis_result = await self.analyze_with_chunking(
+                            content_text, 
+                            prompt_config, 
+                            company_info,
+                            url=url,
+                            title=result.get("title", "")
+                        )
+                    else:
+                        # Perform regular analysis
+                        analysis_result = await self.analyze_with_prompt_async(
+                            content_text, 
+                            prompt_config, 
+                            company_info,
+                            url=url,  # Pass URL for context
+                            title=result.get("title", "")  # Pass title for context
+                        )
+                    
+                    # Check for errors
+                    if "error" in analysis_result:
+                        error_msg = analysis_result["error"].lower()
+                        
+                        # Check for specific errors that might benefit from chunking
+                        content_size_issues = ["too lengthy", "too long", "token limit", "content is too large"]
+                        if any(issue in error_msg for issue in content_size_issues) and not retry_attempts and len(content_text) > 10000:
+                            logger.info(f"Content size issue detected, switching to chunking strategy")
+                            analysis_result = await self.analyze_with_chunking(
+                                content_text, 
+                                prompt_config, 
+                                company_info,
+                                url=url,
+                                title=result.get("title", "")
+                            )
+                        else:
+                            result["analysis_results"][prompt_name] = {
+                                "error": analysis_result["error"]
+                            }
+                            # Don't retry API errors as they're likely to persist
+                            break
+                    
+                    # Extract structured data from analysis text
+                    analysis_text = analysis_result.get("analysis", "")
+                    
+                    # Check for missing content indicators in response
+                    missing_content_indicators = [
+                        "i need the specific web content", 
+                        "please provide the content",
+                        "content provided is too lengthy",
+                        "i'm sorry, but i need",
+                        "i can't see any content"
+                    ]
+                    
+                    if any(indicator in analysis_text.lower() for indicator in missing_content_indicators):
+                        logger.warning(f"OpenAI response indicates missing content: {analysis_text[:100]}...")
+                        
+                        # Try with a different approach on retry
+                        if retry_attempts == 0:
+                            # On first retry, try with explicit content markers
+                            logger.info("Retrying with explicit content markers")
                             
-                            if field_name and field_value:
-                                extracted_fields[field_name] = field_value
-                
-                # Add the analysis result with parsed fields
-                result["analysis_results"][prompt_name] = {
-                    "analysis": analysis_result.get("analysis", ""),
-                    "model": analysis_result.get("model", ""),
-                    "tokens": analysis_result.get("total_tokens", 0),
-                    "processing_time": analysis_result.get("processing_time", 0),
-                    "parsed_fields": extracted_fields  # Add extracted fields
-                }
-                
-                # If we found structured fields, add them to the structured data
-                if extracted_fields:
+                        elif retry_attempts == 1:
+                            # On second retry, try with chunking approach
+                            logger.info("Retrying with content chunking")
+                            analysis_result = await self.analyze_with_chunking(
+                                content_text, 
+                                prompt_config, 
+                                company_info,
+                                url=url,
+                                title=result.get("title", "")
+                            )
+                            analysis_text = analysis_result.get("analysis", "")
+                    
+                    # Extract structured fields with proper prefix
+                    extracted_fields = extract_structured_fields(analysis_text, prefix)
+                    
+                    # Check if we found any structured data
+                    has_structured_data = len(extracted_fields) > 0
+                    
+                    # Add the analysis result with parsed fields
+                    result["analysis_results"][prompt_name] = {
+                        "analysis": analysis_result.get("analysis", ""),
+                        "model": analysis_result.get("model", ""),
+                        "tokens": analysis_result.get("total_tokens", 0),
+                        "processing_time": analysis_result.get("processing_time", 0),
+                        "parsed_fields": extracted_fields,  # Add extracted fields
+                        "retry_attempts": retry_attempts    # Track retry attempts
+                    }
+                    
+                    # Add extracted fields directly to the result
+                    for field_name, field_value in extracted_fields.items():
+                        result[field_name] = field_value
+                    
+                    # If we found structured fields, add them to the structured data
+                    if extracted_fields:
+                        if prompt_name not in structured_data:
+                            structured_data[prompt_name] = {}
+                        structured_data[prompt_name].update(extracted_fields)
+                    else:
+                        # Add timestamp fields if no structured data was found
+                        # This ensures we always have at least some structured data fields
+                        if prompt_name not in structured_data:
+                            structured_data[prompt_name] = {}
+                        
+                        structured_data[prompt_name]["processed_at"] = time.time()
+                        structured_data[prompt_name]["prompt_name"] = prompt_name
+                    
+                    # Update token count
+                    api_tokens += analysis_result.get("total_tokens", 0)
+                    
+                    # Log success or retry info
+                    if has_structured_data:
+                        logger.info(f"Successfully analyzed content with prompt '{prompt_name}' - found {len(extracted_fields)} structured fields")
+                        # Track retry information
+                        if retry_attempts > 0:
+                            result["retry_info"][prompt_name] = {
+                                "attempts": retry_attempts,
+                                "success": True,
+                                "fields_count": len(extracted_fields)
+                            }
+                        # If we found structured data, we're done with this prompt
+                        break
+                    else:
+                        logger.warning(f"No structured data found for '{prompt_name}' (attempt {retry_attempts+1}/{max_retry_attempts+1})")
+                        # Track retry information
+                        result["retry_info"][prompt_name] = {
+                            "attempts": retry_attempts + 1,
+                            "success": False,
+                            "fields_count": 0
+                        }
+                    
+                    # Only retry if no structured data was found
+                    if not has_structured_data:
+                        retry_attempts += 1
+                    else:
+                        break
+                    
+                except Exception as e:
+                    logger.error(f"Error analyzing with prompt '{prompt_name}' (attempt {retry_attempts+1}): {str(e)}")
+                    result["analysis_results"][prompt_name] = {
+                        "error": str(e),
+                        "retry_attempts": retry_attempts
+                    }
+                    
+                    # Record retry failure
+                    result["retry_info"][prompt_name] = {
+                        "attempts": retry_attempts + 1,
+                        "success": False,
+                        "error": str(e)
+                    }
+                    
+                    # Add minimal structured data to prevent export issues
                     if prompt_name not in structured_data:
-                        structured_data[prompt_name] = {}
-                    structured_data[prompt_name].update(extracted_fields)
-                
-                # Update token count
-                api_tokens += analysis_result.get("total_tokens", 0)
-                
-                logger.info(f"Successfully analyzed content with prompt '{prompt_name}'")
-                
-            except Exception as e:
-                logger.error(f"Error analyzing with prompt '{prompt_name}': {str(e)}")
-                result["analysis_results"][prompt_name] = {
-                    "error": str(e)
-                }
+                        structured_data[prompt_name] = {
+                            "processed_at": time.time(),
+                            "prompt_name": prompt_name,
+                            "error": str(e)[:100]  # Truncate long error messages
+                        }
+                    
+                    # Increment retry attempts
+                    retry_attempts += 1
+                    
+                    # Break if we've hit max retries
+                    if retry_attempts > max_retry_attempts:
+                        break
         
         # Add structured data to result
         if structured_data:
             result["structured_data"] = structured_data
-            
-            # Also add structured data to result root for backwards compatibility
-            for prompt_fields in structured_data.values():
-                for field_name, field_value in prompt_fields.items():
-                    result[field_name] = field_value
         
         # Update final result
         total_time = time.time() - start_time
@@ -1124,14 +1544,15 @@ class ContentAnalyzer:
         })
         
         # Store the scraped content and analysis results in BigQuery
-        if hasattr(self, 'content_store') and self.content_store and self.content_store.enable_storage:
+        if hasattr(self, 'content_store') and self.content_store and getattr(self.content_store, 'enable_storage', False):
             try:
                 # Prepare analysis info
                 analysis_info = {
                     "api_tokens": api_tokens,
                     "analysis_time": result["analysis_time"],
                     "prompt_names": prompt_names,
-                    "analysis_count": len(prompt_names)
+                    "analysis_count": len(prompt_names),
+                    "retry_info": result.get("retry_info", {})  # Include retry info
                 }
                 
                 # CRITICAL FIX: Get job_id from the result object if it's not set in the parameter
@@ -1152,19 +1573,41 @@ class ContentAnalyzer:
                         "retry_attempts": content_result.get("retry_attempts", 0)
                     },
                     company_info=company_info,
-                    analysis_info=analysis_info
+                    analysis_info=analysis_info,
+                    structured_data=structured_data  # Also store structured data
                 )
                 
                 # Add content ID reference to result
                 if content_id:
                     result["content_id"] = content_id
                     logger.info(f"Stored content in BigQuery with ID: {content_id}")
+                    
             except Exception as e:
-                logger.error(f"Error storing content in BigQuery: {str(e)}")
+                # Check specifically for authentication errors
+                if "authentication" in str(e).lower() or "credentials" in str(e).lower() or "permission" in str(e).lower():
+                    logger.warning(f"BigQuery authentication error: {str(e)}")
+                    self._bigquery_auth_failed = True
+                    
+                    # If we're in a flask context, flash a message
+                    try:
+                        from flask import flash, session
+                        flash(f"BigQuery authentication failed: {str(e)}. Content analysis completed but results weren't stored in BigQuery.", "warning")
+                        # Store in session that auth failed
+                        if job_id:
+                            session[f"bigquery_auth_failed_{job_id}"] = True
+                    except (ImportError, RuntimeError):
+                        # Not in flask context or flask not available
+                        pass
+                    
+                    # Add auth error to result but don't change overall success status
+                    result["bigquery_error"] = f"Authentication error: {str(e)}"
+                else:
+                    logger.error(f"Error storing content in BigQuery: {str(e)}")
+                    result["bigquery_error"] = str(e)
         
         logger.info(f"Completed processing {url} - status: {result['status']}")
         return result
-        
+
     # Non-async versions for backward compatibility
     def scrape_url(self, url: str, content_type: str = "html", 
                 force_browser: bool = False) -> Dict[str, Any]:
@@ -1180,9 +1623,21 @@ class ContentAnalyzer:
         return result
     
     async def analyze_with_prompt_async(self, content: str, prompt_config: Dict[str, Any], 
-                                  company_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                                  company_info: Optional[Dict[str, Any]] = None,
+                                  url: Optional[str] = None,
+                                  title: Optional[str] = None) -> Dict[str, Any]:
         """
         Asynchronously analyze content using OpenAI model with a specific prompt configuration.
+        
+        Args:
+            content: Content text to analyze
+            prompt_config: Prompt configuration dictionary
+            company_info: Optional company context info
+            url: Optional URL for additional context
+            title: Optional title for additional context
+        
+        Returns:
+            Dictionary with analysis results
         """
         try:
             start_time = time.time()
@@ -1207,6 +1662,16 @@ class ContentAnalyzer:
             temperature = prompt_config.get('temperature', 0.3)
             max_tokens = prompt_config.get('max_tokens', 1500)
             
+            # Prepare page context
+            page_context = ""
+            if url or title:
+                page_context = "Page Information:\n"
+                if url:
+                    page_context += f"- URL: {url}\n"
+                if title:
+                    page_context += f"- Title: {title}\n"
+                page_context += "\n"
+            
             # Prepare the company context
             company_context = ""
             if company_info:
@@ -1214,11 +1679,19 @@ class ContentAnalyzer:
                 for key, value in company_info.items():
                     company_context += f"- {key.capitalize()}: {value}\n"
             
-            # Format user message with the content and company context
-            user_message = user_message_template.format(
-                content=content[:50000],  # Limit content length
-                company_context=company_context
-            )
+            # Format user message with the content, company context, and page information
+            safe_content = content[:50000] if content else ""  # Limit content length
+            
+            # Check if we need to insert context into a template or build our own message
+            if "{content}" in user_message_template:
+                user_message = user_message_template.format(
+                    content=safe_content,
+                    company_context=company_context,
+                    page_context=page_context
+                )
+            else:
+                # Build our own message with explicit sections
+                user_message = f"{page_context}{user_message_template}\n\nCONTENT TO ANALYZE:\n{safe_content}\n\n{company_context}"
             
             # Log the request details
             logger.info(f"Calling OpenAI API with model {model} - content length: {len(content)} chars")
@@ -1404,6 +1877,410 @@ class ContentAnalyzer:
                     logger.warning("Timed out waiting for task cleanup")
         except Exception as e:
             logger.warning(f"Error during async cleanup: {e}")
+
+    async def analyze_with_chunking(self, content_text, prompt_config, company_info=None, url=None, title=None):
+        """
+        Analyze content by splitting it into manageable chunks and combining results.
+        
+        Args:
+            content_text: The content to analyze
+            prompt_config: Prompt configuration
+            company_info: Optional company context
+            url: Optional URL for context
+            title: Optional title for context
+            
+        Returns:
+            Combined analysis result
+        """
+        logger.info(f"Using content chunking for analysis - content length: {len(content_text)}")
+        
+        # Extract configuration
+        model = prompt_config.get('model', 'gpt-4')
+        system_message = prompt_config.get('system_message', '')
+        max_tokens = prompt_config.get('max_tokens', 1500)
+        temperature = prompt_config.get('temperature', 0.3)
+        
+        # Add context information at the beginning
+        context_info = ""
+        if url or title:
+            context_info = "Content Context:\n"
+            if url:
+                context_info += f"URL: {url}\n"
+            if title:
+                context_info += f"Title: {title}\n"
+            context_info += "\n"
+        
+        # Parse content into logical chunks with model-appropriate size
+        chunks = self._smart_chunk_content(content_text, model=model)
+        logger.info(f"Split content into {len(chunks)} chunks for model: {model}")
+        
+        # Prepare company context
+        company_context = ""
+        if company_info:
+            company_context = "Company Information:\n"
+            for key, value in company_info.items():
+                company_context += f"- {key.capitalize()}: {value}\n"
+        
+        total_tokens = 0
+        
+        if len(chunks) == 1:
+            # For single chunk, use normal analysis
+            logger.info("Only one chunk needed, using regular analysis")
+            return await self.analyze_with_prompt_async(
+                content_text, 
+                prompt_config, 
+                company_info,
+                url=url,
+                title=title
+            )
+        
+        # Step 1: Analyze each chunk to extract key information
+        chunk_analyses = []
+        
+        for i, chunk in enumerate(chunks):
+            logger.info(f"Analyzing chunk {i+1}/{len(chunks)} - size: {len(chunk)} chars")
+            
+            # Create a special user message for chunk analysis
+            user_message = (
+                f"{context_info}"
+                f"This is part {i+1} of {len(chunks)} of the web content. "
+                f"Please analyze this partial content to identify key information:\n\n"
+                f"{chunk}\n\n"
+                f"{company_context}"
+                f"Note: You're only seeing a portion of the content. Focus on extracting "
+                f"factual information from this part only."
+            )
+            
+            try:
+                # Call OpenAI API with rate limiting
+                api_key = os.environ.get("OPENAI_API_KEY", "")
+                async_client = AsyncOpenAI(api_key=api_key)
+                
+                # Begin the API call
+                start_time = time.time()
+                
+                response = await async_client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": user_message}
+                    ],
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                
+                chunk_analysis = response.choices[0].message.content
+                chunk_tokens = response.usage.total_tokens
+                total_tokens += chunk_tokens
+                
+                chunk_analyses.append(chunk_analysis)
+                logger.info(f"Chunk {i+1} analysis complete - {chunk_tokens} tokens used")
+                
+            except Exception as e:
+                logger.error(f"Error analyzing chunk {i+1}: {str(e)}")
+                chunk_analyses.append(f"Error analyzing this chunk: {str(e)}")
+                
+            # Slight delay between chunks to avoid rate limiting
+            await asyncio.sleep(0.5)
+        
+        # Step 2: Synthesize the analyses into a final result
+        logger.info("Synthesizing final analysis from all chunks")
+        
+        # If we have more than 10 chunk analyses, we might need to summarize in batches
+        final_chunk_analyses = chunk_analyses
+        if len(chunk_analyses) > 10:
+            logger.info(f"Large number of chunks ({len(chunk_analyses)}), using hierarchical synthesis")
+            batch_size = 8
+            batched_analyses = []
+            
+            # Process batch by batch
+            for i in range(0, len(chunk_analyses), batch_size):
+                batch = chunk_analyses[i:i + batch_size]
+                batch_text = "\n\n--- CHUNK ANALYSIS SEPARATOR ---\n\n".join(batch)
+                
+                batch_synthesis_message = (
+                    f"I've analyzed a portion of a large document in {len(batch)} chunks. "
+                    f"Below are my analyses of these chunks.\n\n"
+                    f"CHUNK ANALYSES:\n{batch_text}\n\n"
+                    f"Please synthesize these analyses into a consolidated summary."
+                )
+                
+                try:
+                    response = await async_client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": system_message},
+                            {"role": "user", "content": batch_synthesis_message}
+                        ],
+                        temperature=temperature,
+                        max_tokens=max_tokens
+                    )
+                    
+                    batched_analyses.append(response.choices[0].message.content)
+                    total_tokens += response.usage.total_tokens
+                    logger.info(f"Batch {len(batched_analyses)} synthesis complete")
+                    
+                except Exception as e:
+                    logger.error(f"Error in batch synthesis: {str(e)}")
+                    batched_analyses.append(f"Error synthesizing batch: {str(e)}")
+                    
+                # Slight delay between batches
+                await asyncio.sleep(0.5)
+            
+            # Use these batch summaries instead of individual analyses
+            final_chunk_analyses = batched_analyses
+            logger.info(f"Reduced {len(chunk_analyses)} chunk analyses to {len(batched_analyses)} batch summaries")
+        
+        # Convert to string for final analysis
+        all_chunk_analyses = "\n\n--- ANALYSIS SEPARATOR ---\n\n".join(final_chunk_analyses)
+        
+        # Create final synthesis message
+        user_message_template = prompt_config.get('user_message', '')
+        synthesis_message = (
+            f"{context_info}"
+            f"I've analyzed a large piece of content in chunks. Below are my analyses of each chunk.\n\n"
+            f"CHUNK ANALYSES:\n{all_chunk_analyses}\n\n"
+            f"Based on these analyses, please provide a final structured analysis "
+            f"using the format specified in the system message.\n\n"
+            f"{company_context}"
+            f"IMPORTANT: Your response MUST include all required structured fields using the specified format."
+        )
+        
+        try:
+            # Call OpenAI API for final synthesis
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+            async_client = AsyncOpenAI(api_key=api_key)
+            
+            # Begin the API call
+            start_time = time.time()
+            
+            response = await async_client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": synthesis_message}
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            
+            final_analysis = response.choices[0].message.content
+            synthesis_tokens = response.usage.total_tokens
+            total_tokens += synthesis_tokens
+            
+            processing_time = time.time() - start_time
+            logger.info(f"Final synthesis complete - {synthesis_tokens} tokens used")
+            
+            return {
+                "analysis": final_analysis,
+                "model": model,
+                "prompt_tokens": 0,  # We don't track separately for chunks
+                "completion_tokens": 0,  # We don't track separately for chunks
+                "total_tokens": total_tokens,
+                "processing_time": processing_time,
+                "chunking_used": True,
+                "num_chunks": len(chunks)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in final synthesis: {str(e)}")
+            return {
+                "error": f"Error in final synthesis: {str(e)}",
+                "analysis": "Error occurred during content analysis synthesis."
+            }
+
+    def _smart_chunk_content(self, content, max_size=None, model=None):
+        """
+        Intelligently chunk content into logical sections based on structure and model capabilities.
+        
+        Args:
+            content: Content text to chunk
+            max_size: Maximum size per chunk (characters). If None, determined from model.
+            model: Model name to determine optimal chunk size
+            
+        Returns:
+            List of content chunks
+        """
+        # Determine optimal chunk size based on model
+        if max_size is None:
+            if model:
+                max_size = self._get_optimal_chunk_size(model)
+            else:
+                # Default to a reasonable chunk size for newer models
+                max_size = 40000
+        
+        logger.info(f"Using chunk size of {max_size} characters for model: {model if model else 'default'}")
+        
+        # If content fits in one chunk, return it directly
+        if len(content) <= max_size:
+            return [content]
+        
+        # Find logical break points using headers, section breaks, etc.
+        import re
+        
+        # Split at major section breaks first (paragraphs, headers)
+        # Look for double newlines, HTML headers, or other section markers
+        section_pattern = r'((?:\r?\n){2,}|(?:<h[1-6]>)|(?:<\/h[1-6]>)|(?:^#{1,6}\s+.*$))'
+        sections = re.split(section_pattern, content, flags=re.MULTILINE)
+        
+        # Process sections into chunks
+        chunks = []
+        current_chunk = ""
+        
+        for section in sections:
+            # If adding this section keeps us under the max size, add it
+            if len(current_chunk) + len(section) <= max_size:
+                current_chunk += section
+            else:
+                # If current section is very large, we need to split it further
+                if len(section) > max_size:
+                    # If we have accumulated content, add it as a chunk first
+                    if current_chunk:
+                        chunks.append(current_chunk)
+                        current_chunk = ""
+                    
+                    # For long sections, split at paragraph level
+                    paragraphs = re.split(r'(\r?\n)', section)
+                    for paragraph in paragraphs:
+                        if len(current_chunk) + len(paragraph) <= max_size:
+                            current_chunk += paragraph
+                        else:
+                            # If paragraph is still too large, split by sentences
+                            if len(paragraph) > max_size:
+                                if current_chunk:
+                                    chunks.append(current_chunk)
+                                    current_chunk = ""
+                                    
+                                # Split by sentences (try to keep sentences together)
+                                sentence_pattern = r'([.!?]+\s+)'
+                                sentences = re.split(sentence_pattern, paragraph)
+                                for sentence in sentences:
+                                    if len(current_chunk) + len(sentence) <= max_size:
+                                        current_chunk += sentence
+                                    else:
+                                        if current_chunk:
+                                            chunks.append(current_chunk)
+                                        
+                                        # If a single sentence is too large, split arbitrarily
+                                        if len(sentence) > max_size:
+                                            # Use a slightly smaller size for arbitrary splits
+                                            # to ensure we don't exceed max_size
+                                            safe_size = max(100, max_size - 100)
+                                            for i in range(0, len(sentence), safe_size):
+                                                chunks.append(sentence[i:i+safe_size])
+                                            current_chunk = ""
+                                        else:
+                                            current_chunk = sentence
+                            else:
+                                # Add accumulated content as a chunk
+                                if current_chunk:
+                                    chunks.append(current_chunk)
+                                current_chunk = paragraph
+                else:
+                    # Add accumulated content as a chunk
+                    if current_chunk:
+                        chunks.append(current_chunk)
+                    current_chunk = section
+        
+        # Add the last chunk if there's anything left
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        # Log chunk statistics
+        chunk_sizes = [len(chunk) for chunk in chunks]
+        avg_size = sum(chunk_sizes) / len(chunks) if chunks else 0
+        max_chunk = max(chunk_sizes) if chunks else 0
+        
+        logger.info(f"Split content into {len(chunks)} chunks: avg={int(avg_size)} chars, max={max_chunk} chars")
+        
+        return chunks
+
+    def _get_optimal_chunk_size(self, model_name):
+        """
+        Get optimal chunk size for a given model based on its context window.
+        
+        Args:
+            model_name: Name of the model (e.g., 'o3-mini', 'gpt-4o', 'o1')
+        
+        Returns:
+            Optimal chunk size in characters
+        """
+        model_name = model_name.lower()
+        
+        # Set reasonable limits based on model capabilities (in characters, not tokens)
+        # Using conservative estimates (roughly 4 chars per token)
+        
+        # Newer models (as of 2025)
+        if 'o3-mini' in model_name:
+            # o3-mini: 200K context window, 100K max output
+            # Use ~60K chars per chunk (conservative to leave room for prompt and output)
+            return 60000
+        elif 'o1' in model_name:
+            # o1: 200K context window, 100K max output
+            return 60000
+        
+        # Previous models
+        elif 'gpt-4o' in model_name:
+            # GPT-4o: 128K context window, 16K max output
+            return 40000
+        elif 'gpt-4-turbo' in model_name:
+            # GPT-4 Turbo: 128K context window
+            return 40000
+        elif 'gpt-4-32k' in model_name:
+            # GPT-4-32k: 32K context window
+            return 20000
+        elif 'gpt-4' in model_name:
+            # Standard GPT-4: 8K context window
+            return 12000
+        elif 'gpt-3.5-turbo-16k' in model_name:
+            # GPT-3.5-16k: 16K context window
+            return 10000
+        elif 'gpt-3.5' in model_name:
+            # Standard GPT-3.5: 4K context window
+            return 6000
+        else:
+            # Default for unknown models - use a moderate size
+            # This will work for most use cases but may not be optimal
+            return 15000
+
+
+
+
+def preprocess_content(content_text):
+    """
+    Preprocess content text to improve analysis quality.
+    
+    Args:
+        content_text: Raw content text from scraping
+        
+    Returns:
+        Preprocessed content
+    """
+    if not content_text:
+        return ""
+        
+    # Remove excessive whitespace
+    content_text = re.sub(r'\s+', ' ', content_text)
+    
+    # Remove repetitive elements (common in poorly scraped pages)
+    lines = content_text.split('\n')
+    unique_lines = []
+    seen = set()
+    
+    for line in lines:
+        line_stripped = line.strip()
+        if line_stripped and line_stripped not in seen:
+            seen.add(line_stripped)
+            unique_lines.append(line)
+            
+    # Join lines back together
+    content_text = '\n'.join(unique_lines)
+    
+    # Add markers to clearly delineate content
+    content_text = f"--- WEB CONTENT START ---\n{content_text}\n--- WEB CONTENT END ---"
+    
+    return content_text
+
 
 
 class URLProcessor:

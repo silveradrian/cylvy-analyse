@@ -326,15 +326,7 @@ class DatabaseManager:
     
 
     def save_result(self, result):
-        """
-        Save an analysis result to the database.
-        
-        Args:
-            result: Dictionary containing the analysis result
-                
-        Returns:
-            The ID of the saved result
-        """
+        """Save a URL analysis result to the database."""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
@@ -413,7 +405,7 @@ class DatabaseManager:
             structured_fields = {}
             for key, value in result.items():
                 # Identify fields that look like structured data (prefixed or containing underscore)
-                if (key.startswith(('ci_', 'pa_', 'ca_')) or 
+                if (key.startswith(('ci_', 'pa_', 'ca_', 'cr_', 'si_')) or 
                     ('_' in key and key not in ('job_id', 'api_tokens', 'word_count', 'content_type'))):
                     structured_fields[key] = value
             

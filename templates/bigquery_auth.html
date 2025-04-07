@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="container mt-5">
+    <div class="card">
+        <div class="card-header bg-warning text-white">
+            <h4>BigQuery Authentication Required</h4>
+        </div>
+        <div class="card-body">
+            <p class="lead">This job requires BigQuery authentication to store results.</p>
+            
+            <div class="alert alert-info">
+                <p><strong>Authentication Options:</strong></p>
+                <ol>
+                    <li>Make sure you have valid BigQuery credentials in your environment</li>
+                    <li>If using application default credentials, run <code>gcloud auth application-default login</code></li>
+                    <li>If using a service account, ensure the JSON key is available at the configured location</li>
+                </ol>
+            </div>
+            
+            <div class="row mt-4">
+                <div class="col-md-6">
+                    <a href="{{ url_for('job_status', job_id=job_id) }}" class="btn btn-primary btn-block">
+                        Check Authentication Again
+                    </a>
+                </div>
+                <div class="col-md-6">
+                    <form action="{{ url_for('disable_bigquery_for_job', job_id=job_id) }}" method="post">
+                        <button type="submit" class="btn btn-secondary btn-block">
+                            Continue Without BigQuery
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

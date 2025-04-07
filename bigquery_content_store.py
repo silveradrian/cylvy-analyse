@@ -1,8 +1,22 @@
 import os
 import json
 import logging
+import asyncio
+
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+
+from typing import Dict, Any, List, Optional, Tuple
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Add custom JSON encoder for datetime objects
+class DateTimeEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles datetime objects by converting them to ISO format strings."""
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super(DateTimeEncoder, self).default(obj)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -20,22 +34,48 @@ class BigQueryContentStore:
     Handles storage and retrieval of raw scraped content in Google BigQuery.
     Focused on content storage only (no vector embeddings).
     """
-    def __init__(self, dataset_id=None, project_id=None):
+    def __init__(self, dataset_id=None, project_id=None, auto_initialize=True):
         """Initialize BigQuery content store."""
         # Explicitly set these to their default values if env vars are not provided
         self.project_id = project_id or os.environ.get("GOOGLE_CLOUD_PROJECT", "cylvy-analyse")
         self.dataset_id = dataset_id or os.environ.get("BIGQUERY_DATASET_ID", "content_store")
         
-        # Force enable_storage to True for testing
+        # Authentication status tracking
+        self._authenticated = False
+        self._auth_error = None
+        self._auth_checked = False
+        
+        # Default to enabled, will be set to False if auth fails
         self.enable_storage = True
         
         # Log configuration for debugging
         logger.info(f"BigQuery Config - Project: {self.project_id}, Dataset: {self.dataset_id}")
         logger.info(f"Raw Storage Enabled: {self.enable_storage}")
         
-        # Initialize BigQuery client if storage is enabled
-        if self.enable_storage:
+        # Initialize BigQuery client if requested (default)
+        # But don't fail if it doesn't work - we'll track the error
+        self.client = None
+        if auto_initialize:
+            try:
+                self._lazy_init()
+            except Exception as e:
+                logger.warning(f"BigQuery initialization deferred: {str(e)}")
+    
+    def _lazy_init(self):
+        """Lazy initialization of BigQuery client."""
+        if self.client is not None:
+            return
+            
+        # Check if already disabled
+        if not self.enable_storage:
+            return
+            
+        try:
             self._initialize_bigquery()
+        except Exception as e:
+            # Don't raise, just log and track error
+            logger.warning(f"BigQuery initialization failed: {str(e)}")
+            self._auth_error = str(e)
     
     def _initialize_bigquery(self):
         """Initialize BigQuery client and create tables if needed."""
@@ -45,10 +85,16 @@ class BigQueryContentStore:
             # Check for project
             if not self.project_id:
                 logger.error("Google Cloud project ID not specified")
+                self._auth_error = "Project ID is required for BigQuery"
+                self._authenticated = False
+                self.enable_storage = False
                 raise ValueError("Project ID is required for BigQuery")
                 
             if not self.dataset_id:
                 logger.error("BigQuery dataset ID not specified")
+                self._auth_error = "Dataset ID is required for BigQuery"
+                self._authenticated = False
+                self.enable_storage = False
                 raise ValueError("Dataset ID is required for BigQuery")
             
             # Create BigQuery client
@@ -70,12 +116,24 @@ class BigQueryContentStore:
             
             # Create content table if it doesn't exist
             self._create_content_table()
+            
+            # Authentication successful
+            self._authenticated = True
+            self._auth_error = None
+            self._auth_checked = True
                 
         except ImportError:
-            logger.error("Google Cloud BigQuery library not installed. Run: pip install google-cloud-bigquery")
+            error_msg = "Google Cloud BigQuery library not installed. Run: pip install google-cloud-bigquery"
+            logger.error(error_msg)
+            self._auth_error = error_msg
+            self._authenticated = False
+            self._auth_checked = True
             self.enable_storage = False
         except Exception as e:
             logger.error(f"Error initializing BigQuery: {str(e)}")
+            self._auth_error = str(e)
+            self._authenticated = False
+            self._auth_checked = True
             self.enable_storage = False
     
     def _create_content_table(self):
@@ -119,7 +177,8 @@ class BigQueryContentStore:
                            scrape_info: Dict[str, Any] = None, 
                            company_info: Optional[Dict[str, Any]] = None,
                            analysis_info: Optional[Dict[str, Any]] = None,
-                           metadata: Optional[Dict[str, Any]] = None) -> Optional[str]:
+                           metadata: Optional[Dict[str, Any]] = None,
+                           structured_data: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """
         Store scraped content in BigQuery database.
         
@@ -133,13 +192,29 @@ class BigQueryContentStore:
             company_info: Company context information
             analysis_info: Information about the analysis (tokens, model, etc.)
             metadata: Additional metadata about the content
+            structured_data: Structured data extracted from the content
             
         Returns:
             content_id: Unique ID for the stored content
         """
+        # Make sure we're initialized
+        if self.client is None:
+            try:
+                self._lazy_init()
+            except Exception as e:
+                logger.warning(f"Failed to initialize BigQuery during store_content: {str(e)}")
+                
+        # Check if storage is enabled
         if not self.enable_storage:
             logger.warning(f"Storage disabled, not storing content for: {url}")
             return None
+            
+        # Check authentication if not checked yet
+        if not self._auth_checked:
+            authenticated = await self.check_authentication()
+            if not authenticated:
+                logger.warning(f"BigQuery authentication failed, not storing content for: {url}")
+                return None
             
         logger.info(f"Preparing to store content for URL: {url}")
             
@@ -190,6 +265,10 @@ class BigQueryContentStore:
         # Store any analysis details in metadata
         if analysis_info:
             metadata["analysis_details"] = analysis_info
+            
+        # Store structured data in metadata
+        if structured_data:
+            metadata["structured_data"] = structured_data
         
         # Store raw content
         content_id = await self._store_raw_content(
@@ -210,8 +289,6 @@ class BigQueryContentStore:
             
         return content_id
     
-    # In bigquery_content_store.py, update the _store_raw_content method:
-
     async def _store_raw_content(self, content_id, job_id, url, title, content_text, 
                                content_type, word_count, domain, scrape_status, 
                                scrape_time, analysis_tokens, metadata, company_info):
@@ -263,6 +340,14 @@ class BigQueryContentStore:
             logger.error(f"Error storing content in BigQuery: {str(e)}")
             import traceback
             logger.error(f"Stack trace: {traceback.format_exc()}")
+            
+            # Check if it's an authentication error
+            error_msg = str(e).lower()
+            if "authentication" in error_msg or "credential" in error_msg or "permission" in error_msg:
+                self._authenticated = False
+                self._auth_error = str(e)
+                self.enable_storage = False
+            
             return None
     
     async def get_content_by_job_id(self, job_id, limit=100, offset=0):
@@ -277,6 +362,13 @@ class BigQueryContentStore:
         Returns:
             List of content items for the job
         """
+        # Make sure we're initialized
+        if self.client is None:
+            try:
+                self._lazy_init()
+            except Exception:
+                pass
+                
         if not self.enable_storage:
             logger.warning("Content storage is not enabled")
             return []
@@ -337,6 +429,13 @@ class BigQueryContentStore:
         Returns:
             Dictionary of job statistics
         """
+        # Make sure we're initialized
+        if self.client is None:
+            try:
+                self._lazy_init()
+            except Exception:
+                pass
+                
         if not self.enable_storage:
             logger.warning("Content storage is not enabled")
             return {}
@@ -389,3 +488,90 @@ class BigQueryContentStore:
         except Exception as e:
             logger.error(f"Error retrieving job stats: {str(e)}")
             return {}
+
+    async def check_authentication(self) -> bool:
+        """
+        Check if BigQuery credentials are valid and authenticated.
+        
+        Returns:
+            bool: True if authentication is valid, False otherwise
+        """
+        try:
+            if not self.enable_storage:
+                return True  # Storage disabled, so no auth needed
+                
+            # Try a simple query to test authentication
+            from google.cloud import bigquery
+            
+            if not self.client:
+                logger.info("Creating BigQuery client for authentication check")
+                self.client = bigquery.Client(project=self.project_id)
+            
+            # Simple test query that shouldn't cost much
+            query = "SELECT 1 as test_value"
+            
+            # Run query with a short timeout (5 seconds)
+            try:
+                # Convert to async operation
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(lambda: list(self.client.query(query).result(timeout=10))),
+                    timeout=10.0
+                )
+                # Check if we got any results
+                self._auth_checked = True
+                if result and len(result) > 0:
+                    logger.info("BigQuery authentication successful")
+                    self._authenticated = True
+                    self._auth_error = None
+                    return True
+                else:
+                    logger.warning("BigQuery authentication check returned no results")
+                    self._authenticated = False
+                    self._auth_error = "No results from authentication test query"
+                    self.enable_storage = False
+                    return False
+                    
+            except asyncio.TimeoutError:
+                logger.warning("BigQuery authentication check timed out")
+                self._authenticated = False
+                self._auth_checked = True
+                self._auth_error = "Authentication check timed out"
+                self.enable_storage = False
+                return False
+                
+        except Exception as e:
+            error_msg = str(e)
+            logger.warning(f"BigQuery authentication check failed: {error_msg}")
+            self._authenticated = False
+            self._auth_checked = True
+            self._auth_error = error_msg
+            self.enable_storage = False
+            return False
+    
+    def get_auth_status(self) -> Tuple[bool, str]:
+        """
+        Get the current authentication status and error message.
+        
+        Returns:
+            Tuple[bool, str]: (is_authenticated, error_message)
+        """
+        return self._authenticated, self._auth_error
+    
+    def disable_storage(self) -> None:
+        """Disable BigQuery storage."""
+        self.enable_storage = False
+        logger.info("BigQuery storage disabled")
+        
+    def enable_storage(self) -> None:
+        """Try to enable BigQuery storage by reinitializing."""
+        try:
+            self.enable_storage = True
+            # Reinitialize
+            self.client = None
+            self._initialize_bigquery()
+            logger.info("BigQuery storage enabled")
+        except Exception as e:
+            logger.error(f"Failed to enable BigQuery storage: {str(e)}")
+            self.enable_storage = False
+            self._auth_error = str(e)
+            self._authenticated = False
