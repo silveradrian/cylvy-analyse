@@ -1623,9 +1623,9 @@ class ContentAnalyzer:
         return result
     
     async def analyze_with_prompt_async(self, content: str, prompt_config: Dict[str, Any], 
-                                  company_info: Optional[Dict[str, Any]] = None,
-                                  url: Optional[str] = None,
-                                  title: Optional[str] = None) -> Dict[str, Any]:
+                              company_info: Optional[Dict[str, Any]] = None,
+                              url: Optional[str] = None,
+                              title: Optional[str] = None) -> Dict[str, Any]:
         """
         Asynchronously analyze content using OpenAI model with a specific prompt configuration.
         
@@ -1647,6 +1647,7 @@ class ContentAnalyzer:
             
             # Make a direct client instance for this specific call
             async_client = AsyncOpenAI(api_key=api_key)
+            self.async_openai_client = async_client
             
             if not api_key:
                 logger.error("OpenAI API key missing for API call")
@@ -1654,9 +1655,54 @@ class ContentAnalyzer:
                     "error": "OpenAI API key missing",
                     "analysis": "Error: Could not complete analysis due to missing API key."
                 }
-                
+                    
             # Extract prompt configuration
             model = prompt_config.get('model', 'gpt-4')
+            prompt_name = prompt_config.get('name', 'unknown')
+            # Determine delimiter to use for field extraction (default to ||| if none specified)
+            delimiter = prompt_config.get('delimiter', '|||')
+            
+            # Content handling strategy based on size
+            content_length = len(content) if content else 0
+            
+            # Skip processing if content is missing
+            if not content or content_length == 0:
+                logger.warning(f"No content provided for analysis with prompt '{prompt_name}'")
+                return {
+                    "error": "No content provided for analysis",
+                    "analysis": "Error: No content to analyze.",
+                    "structured_data": {}
+                }
+            
+            # For very large content, use a summarize-then-analyze approach
+            max_direct_length = 50000  # ~12.5K tokens / ~10K words 
+            if content_length > max_direct_length:
+                logger.info(f"Content too long ({content_length} chars), using summary approach")
+                
+                # Summarize first, then analyze the summary instead of chunking
+                content_summary = await self._generate_content_summary(
+                    content_text=content,
+                    url=url,
+                    model=model
+                )
+                
+                # Use the summary for analysis
+                summary_length = len(content_summary)
+                logger.info(f"Generated content summary: {summary_length} chars")
+                
+                if summary_length < 100:  # Very short summary indicates a problem
+                    logger.warning(f"Summary too short, falling back to truncated content")
+                    # Fallback to truncation
+                    truncated_content = content[:max_direct_length]
+                    truncated_note = f"\n\n[NOTE: Content was truncated from {content_length} to {len(truncated_content)} characters due to length constraints.]"
+                    content_to_analyze = truncated_content + truncated_note
+                else:
+                    content_to_analyze = content_summary
+            else:
+                # Content is small enough for direct analysis
+                content_to_analyze = content
+            
+            # Extract rest of prompt configuration
             system_message = prompt_config.get('system_message', '')
             user_message_template = prompt_config.get('user_message', '')
             temperature = prompt_config.get('temperature', 0.3)
@@ -1679,22 +1725,23 @@ class ContentAnalyzer:
                 for key, value in company_info.items():
                     company_context += f"- {key.capitalize()}: {value}\n"
             
-            # Format user message with the content, company context, and page information
-            safe_content = content[:50000] if content else ""  # Limit content length
-            
-            # Check if we need to insert context into a template or build our own message
+            # Format user message with content, company context, and page information
             if "{content}" in user_message_template:
                 user_message = user_message_template.format(
-                    content=safe_content,
+                    content=content_to_analyze,
                     company_context=company_context,
                     page_context=page_context
                 )
             else:
                 # Build our own message with explicit sections
-                user_message = f"{page_context}{user_message_template}\n\nCONTENT TO ANALYZE:\n{safe_content}\n\n{company_context}"
+                user_message = f"{page_context}{user_message_template}\n\nCONTENT TO ANALYZE:\n{content_to_analyze}\n\n{company_context}"
             
+            # Add explicit instructions to format output with delimiters if not already in the template
+            if delimiter and delimiter not in user_message_template:
+                user_message += f"\n\nIMPORTANT: Format key insights using field_name {delimiter} value format."
+                
             # Log the request details
-            logger.info(f"Calling OpenAI API with model {model} - content length: {len(content)} chars")
+            logger.info(f"Calling OpenAI API with model {model} - content length: {len(content_to_analyze)} chars")
             
             # Skip rate limiter and make direct API call
             try:
@@ -1723,14 +1770,76 @@ class ContentAnalyzer:
                 logger.info(f"OpenAI API call completed in {processing_time:.2f}s")
                 logger.info(f"Token usage: {total_tokens} tokens")
                 
-                return {
+                # Extract structured data using the delimited format
+                structured_data = self._extract_delimited_fields(analysis_text, delimiter, prompt_name)
+                
+                # Check if we got structured data
+                if not structured_data:
+                    logger.warning(f"No structured data found for '{prompt_name}' in first attempt")
+                    
+                    # If content was summarized and no structured data was found, try direct truncation instead
+                    if content_length > max_direct_length and content_to_analyze != content[:max_direct_length]:
+                        logger.info(f"Retrying with truncated content instead of summary")
+                        
+                        # Update content to truncated version
+                        truncated_content = content[:max_direct_length]
+                        truncated_note = f"\n\n[NOTE: Content was truncated from {content_length} to {len(truncated_content)} characters due to length constraints.]"
+                        content_to_analyze = truncated_content + truncated_note
+                        
+                        # Reformat user message with truncated content
+                        if "{content}" in user_message_template:
+                            user_message = user_message_template.format(
+                                content=content_to_analyze,
+                                company_context=company_context,
+                                page_context=page_context
+                            )
+                        else:
+                            user_message = f"{page_context}{user_message_template}\n\nCONTENT TO ANALYZE:\n{content_to_analyze}\n\n{company_context}"
+                        
+                        # Add more explicit instructions for structured data
+                        user_message += f"\n\nCRITICAL: You MUST format your response using field_name {delimiter} value format for each key insight."
+                        
+                        # Try again with truncated content
+                        retry_response = await async_client.chat.completions.create(
+                            model=model,
+                            messages=[
+                                {"role": "system", "content": system_message + f"\n\nYour output MUST include field_name {delimiter} value format."},
+                                {"role": "user", "content": user_message}
+                            ],
+                            temperature=temperature * 0.8,  # Lower temperature for more consistent output
+                            max_tokens=max_tokens
+                        )
+                        
+                        # Update token counts
+                        retry_tokens = retry_response.usage.total_tokens
+                        total_tokens += retry_tokens
+                        
+                        # Extract the new response
+                        retry_analysis = retry_response.choices[0].message.content
+                        
+                        # Try to extract structured data again
+                        retry_structured_data = self._extract_delimited_fields(retry_analysis, delimiter, prompt_name)
+                        
+                        if retry_structured_data:
+                            logger.info(f"Successfully extracted structured data on retry attempt")
+                            structured_data = retry_structured_data
+                            analysis_text = retry_analysis
+                        else:
+                            logger.warning(f"Failed to extract structured data on retry attempt")
+                
+                result = {
                     "analysis": analysis_text,
+                    "structured_data": {prompt_name: structured_data} if structured_data else {},
                     "model": model,
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
                     "total_tokens": total_tokens,
-                    "processing_time": processing_time
+                    "api_tokens": total_tokens,
+                    "processing_time": processing_time,
+                    "content_strategy": "summary" if content_length > max_direct_length and content_to_analyze != content[:max_direct_length] else "direct"
                 }
+                
+                return result
                 
             except Exception as api_error:
                 logger.error(f"Error calling OpenAI API: {str(api_error)}")
@@ -1745,6 +1854,99 @@ class ContentAnalyzer:
                 "error": str(e),
                 "analysis": "Error: Could not complete analysis."
             }
+
+    async def _generate_content_summary(self, content_text: str, url: Optional[str] = None, model: str = "gpt-4o") -> str:
+        """
+        Generate a detailed summary of long content for more reliable analysis.
+
+        Args:
+            content_text: The original long content text
+            url: Optional URL for context
+            model: The model to use (defaults to gpt-4o)
+            
+        Returns:
+            A detailed summary of the content preserving key information
+        """
+        # Use gpt-4o-mini for summarization unless specified otherwise
+        summary_model = "gpt-4o-mini" if "gpt-4o-mini" not in model else model
+
+        # Calculate optimal content size based on model
+        if "gpt-4o-mini" in summary_model:
+            # gpt-4o-mini has 128K context window
+            # Use approximately 110K tokens (~440K chars) to leave room for prompts and overhead
+            max_content_chars = 440000
+            max_output_tokens = 14000  # Leave buffer from the 16,384 limit
+        else:
+            # Use the general optimal chunk size for other models
+            chunk_size = self._get_optimal_chunk_size(summary_model)
+            max_content_chars = chunk_size * 5  # Default to 5 chunks for other models
+            max_output_tokens = 4000  # Default output tokens
+
+        # If content is extremely long, truncate it to fit the model's capabilities
+        if len(content_text) > max_content_chars:
+            logger.info(f"Content exceeds maximum summarization length ({len(content_text)} chars), truncating to {max_content_chars} chars")
+            content_for_summary = content_text[:max_content_chars]
+            # Add note about truncation
+            truncation_note = f"\n\n[NOTE: The original content was {len(content_text)} chars and has been truncated to {max_content_chars} chars for processing.]"
+        else:
+            content_for_summary = content_text
+            truncation_note = ""
+
+        logger.info(f"Generating content summary using model {summary_model} with max output of {max_output_tokens} tokens")
+
+        try:
+            # Prepare system prompt with specific instructions for the larger model capacity
+            system_prompt = f"""You are an expert content summarizer with exceptional ability to condense long documents.
+
+        Create a comprehensive and detailed summary of the provided content from {url or 'the document'}.
+        Your summary should:
+        1. Preserve ALL key facts, statistics, topics, entities, and information
+        2. Include specific details, numbers, and quoted phrases when relevant
+        3. Maintain the original structure and flow of the content
+        4. Be detailed enough to enable thorough analysis by another AI system
+        5. Focus on substantive information rather than repetitive or boilerplate content
+
+        Take advantage of your expanded output capacity to create a thorough yet concise representation of the content.
+        """
+
+            # Call the OpenAI API for summarization
+            response = await self.async_openai_client.chat.completions.create(
+                model=summary_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Please create a detailed summary of the following content for analysis purposes:{truncation_note}\n\n{content_for_summary}"}
+                ],
+                temperature=0.2,  # Lower temperature for more precise summarization
+                max_tokens=max_output_tokens
+            )
+            
+            # Extract the summary
+            summary = response.choices[0].message.content
+            
+            # Log token usage for transparency
+            token_usage = response.usage.total_tokens
+            input_tokens = response.usage.prompt_tokens
+            output_tokens = response.usage.completion_tokens
+            
+            logger.info(f"Generated content summary: {output_tokens} output tokens from {input_tokens} input tokens (total: {token_usage})")
+            
+            # Add source information to ensure context is preserved
+            if url:
+                summary_with_context = f"SUMMARY OF CONTENT FROM: {url}\n\n{summary}"
+            else:
+                summary_with_context = f"DETAILED DOCUMENT SUMMARY:\n\n{summary}"
+            
+            # Add information about the summarization process
+            summary_with_context += f"\n\n[This is a summary generated from {len(content_text)} characters of original content]"
+            
+            return summary_with_context
+            
+        except Exception as e:
+            logger.error(f"Error generating content summary: {str(e)}")
+            # Return a truncated version of the content as fallback
+            truncated_content = content_text[:50000]  # ~12.5K tokens
+            return truncated_content + "\n\n[NOTE: This is truncated content. The original is longer.]"
+
     
     def process_url(self, url: str, prompt_names: List[str], 
               company_info: Optional[Dict[str, Any]] = None,
@@ -2089,6 +2291,300 @@ class ContentAnalyzer:
                 "analysis": "Error occurred during content analysis synthesis."
             }
 
+    async def _process_chunks(self, url, content_text, prompt_name, prompt_config, 
+                             company_info=None, model=None, retry_attempt=1):
+        """
+        Process content in chunks when it's too large for a single API call.
+        Uses delimited format (field_name ||| value) instead of JSON for more reliable extraction.
+        
+        Args:
+            url: URL being analyzed
+            content_text: Large text content to analyze
+            prompt_name: Name of the prompt configuration
+            prompt_config: Prompt configuration dictionary
+            company_info: Optional company context
+            model: Model to use (defaults to prompt config)
+            retry_attempt: Current retry attempt count
+            
+        Returns:
+            Dictionary containing analysis results
+        """
+        # Ensure we have a proper model
+        if not model:
+            model = prompt_config.get('model', 'gpt-4o')
+        
+        # Calculate appropriate chunk size based on model
+        chunk_size = self._get_optimal_chunk_size(model)
+        
+        logger.info(f"Using content chunking for analysis - content length: {len(content_text)}")
+        logger.info(f"Using chunk size of {chunk_size} characters for model: {model}")
+        
+        # Split content into chunks of appropriate size
+        chunks = []
+        for i in range(0, len(content_text), chunk_size):
+            chunk = content_text[i:i + chunk_size]
+            chunks.append(chunk)
+            
+        # Log chunk statistics
+        avg_chunk_size = sum(len(c) for c in chunks) // len(chunks) if chunks else 0
+        max_chunk_size = max(len(c) for c in chunks) if chunks else 0
+        logger.info(f"Split content into {len(chunks)} chunks: avg={avg_chunk_size} chars, max={max_chunk_size} chars")
+        
+        # Determine delimiter to use
+        delimiter = prompt_config.get('delimiter', '|||')
+        
+        # Process each chunk
+        chunk_results = []
+        for i, chunk in enumerate(chunks, 1):
+            logger.info(f"Analyzing chunk {i}/{len(chunks)} - size: {len(chunk)} chars")
+            
+            # Create chunk-specific system message
+            chunk_system_message = f"""You are analyzing part {i} of {len(chunks)} of content from {url or 'the document'}.
+    Focus on extracting key information from this section only.
+    DO NOT make conclusions about the entire content yet.
+    Format your observations using field_name {delimiter} value format."""
+
+            if i == 1:
+                chunk_system_message += " This is the beginning of the content."
+            elif i == len(chunks):
+                chunk_system_message += " This is the end of the content."
+            
+            # Extract prompt configuration
+            prompt_system_message = prompt_config.get('system_message', '')
+            prompt_user_message = prompt_config.get('user_message', '')
+            temperature = prompt_config.get('temperature', 0.3)
+            max_tokens = prompt_config.get('max_tokens', 1500)
+            
+            # Prepare context for the chunk
+            page_context = f"URL: {url}\n" if url else ""
+            
+            # Prepare the company context
+            company_context = ""
+            if company_info:
+                company_context = "Company Information:\n"
+                for key, value in company_info.items():
+                    company_context += f"- {key.capitalize()}: {value}\n"
+            
+            # Format user message with the chunk and context
+            if "{content}" in prompt_user_message:
+                user_message = prompt_user_message.format(
+                    content=chunk,
+                    company_context=company_context,
+                    page_context=page_context
+                )
+            else:
+                user_message = f"{page_context}{prompt_user_message}\n\nCONTENT TO ANALYZE:\n{chunk}\n\n{company_context}"
+            
+            # Add specific instructions to use delimited format
+            user_message += f"\n\nIMPORTANT: Format key insights using field_name {delimiter} value format."
+            
+            # Call the OpenAI API for this chunk
+            try:
+                response = await self.async_openai_client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": chunk_system_message + "\n" + prompt_system_message},
+                        {"role": "user", "content": user_message}
+                    ],
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                
+                # Extract response
+                analysis_text = response.choices[0].message.content
+                token_usage = response.usage.total_tokens
+                
+                # Store chunk result
+                chunk_results.append({
+                    "chunk_index": i,
+                    "analysis": analysis_text,
+                    "tokens": token_usage
+                })
+                
+                logger.info(f"Chunk {i} analysis complete - {token_usage} tokens used")
+                
+            except Exception as e:
+                logger.error(f"Error processing chunk {i}: {str(e)}")
+                chunk_results.append({
+                    "chunk_index": i,
+                    "analysis": f"Error processing chunk {i}: {str(e)}",
+                    "tokens": 0,
+                    "error": str(e)
+                })
+        
+        # Now synthesize all chunk results
+        logger.info("Synthesizing final analysis from all chunks")
+        
+        # Create synthesis prompt that asks for delimited format
+        synthesis_system_prompt = f"""You are synthesizing a final analysis from multiple content chunks.
+    Based on the analyses of {len(chunks)} different sections of the content from {url or 'the document'}, create a comprehensive final analysis.
+
+    MOST IMPORTANTLY: Your response MUST include structured data using the field_name {delimiter} value format for every key insight.
+
+    For example:
+    field_name_1 {delimiter} value_1
+    field_name_2 {delimiter} value_2
+
+    This format is CRITICAL and must be followed exactly for automated processing.
+    """
+        
+        # Combine all chunk analyses as context for the synthesis
+        chunk_contexts = []
+        total_tokens = 0
+        
+        for result in chunk_results:
+            chunk_contexts.append(f"--- CHUNK {result['chunk_index']} ANALYSIS ---\n{result['analysis']}")
+            total_tokens += result.get('tokens', 0)
+        
+        combined_analyses = "\n\n".join(chunk_contexts)
+        
+        # Prepare synthesis user message
+        synthesis_user_message = f"""Here is the original prompt:
+    {prompt_user_message}
+
+    Below are analyses of {len(chunks)} different chunks of the document from {url or 'the source'}.
+    Synthesize these into a comprehensive final analysis.
+
+    {combined_analyses}
+
+    IMPORTANT: Your final analysis MUST include structured data using the field_name {delimiter} value format for every key insight.
+    This format MUST be followed exactly as shown in the examples:
+
+    field_name_1 {delimiter} value_1
+    field_name_2 {delimiter} value_2
+
+    Include all the fields requested in the original prompt."""
+        
+        # Call OpenAI API for synthesis
+        try:
+            response = await self.async_openai_client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": synthesis_system_prompt},
+                    {"role": "user", "content": synthesis_user_message}
+                ],
+                temperature=0.3,  # Lower temperature for more accurate structured data generation
+                max_tokens=2000   # Allow more tokens for synthesis
+            )
+            
+            # Extract synthesis result
+            synthesis_text = response.choices[0].message.content
+            synthesis_tokens = response.usage.total_tokens
+            
+            logger.info(f"Final synthesis complete - {synthesis_tokens} tokens used")
+            
+            # Extract structured data using delimited format extraction
+            structured_data = self._extract_delimited_fields(synthesis_text, delimiter, prompt_name)
+            
+            # If no structured data found, try once more with explicit instructions
+            if not structured_data and retry_attempt < 3:
+                logger.warning(f"No structured data found for '{prompt_name}' (attempt {retry_attempt}/3)")
+                
+                # Sleep briefly before retrying
+                await asyncio.sleep(1)
+                
+                # Retry with more explicit instructions
+                return await self._process_chunks(
+                    url=url,
+                    content_text=content_text,
+                    prompt_name=prompt_name,
+                    prompt_config=prompt_config,
+                    company_info=company_info,
+                    model=model,
+                    retry_attempt=retry_attempt + 1
+                )
+            
+            # Prepare final result
+            result = {
+                "analysis": synthesis_text,
+                "structured_data": {prompt_name: structured_data} if structured_data else {},
+                "model": model,
+                "total_tokens": total_tokens + synthesis_tokens,
+                "api_tokens": total_tokens + synthesis_tokens,  # For consistency with non-chunked processing
+                "prompt_tokens": 0,  # Not available in chunked processing
+                "completion_tokens": 0,  # Not available in chunked processing
+                "processing_time": 0,  # Not tracked precisely in chunked processing
+                "chunks": len(chunks)
+            }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in synthesis: {str(e)}")
+            return {
+                "error": f"Synthesis error: {str(e)}",
+                "analysis": "Error synthesizing results from chunks.",
+                "model": model,
+                "total_tokens": total_tokens,
+                "chunks": len(chunks)
+            }
+
+    def _extract_delimited_fields(self, text, delimiter="|||", prompt_name="unknown"):
+        """
+        Extract fields from text using a delimiter format (field_name delimiter value).
+        
+        Args:
+            text: Text containing delimited fields
+            delimiter: The delimiter string (default: "|||")
+            prompt_name: Name of the prompt for logging
+            
+        Returns:
+            Dictionary of extracted fields
+        """
+        if not text:
+            return {}
+        
+        import re
+        
+        # Prepare the delimiter for regex (escape special characters)
+        esc_delimiter = re.escape(delimiter)
+        
+        # Pattern to match field_name delimiter value
+        pattern = rf"([a-zA-Z0-9_]+)\s*{esc_delimiter}\s*(.+?)(?:\n|$)"
+        
+        # Find all matches
+        matches = re.findall(pattern, text)
+        
+        # Convert matches to dictionary
+        fields = {}
+        for field_name, field_value in matches:
+            # Clean up the field value
+            clean_value = field_value.strip()
+            
+            # Try to convert to appropriate type if possible
+            try:
+                # Check if it's a numerical value
+                if clean_value.isdigit():
+                    fields[field_name] = int(clean_value)
+                # Check if it's a float
+                elif clean_value.replace('.', '', 1).isdigit() and clean_value.count('.') == 1:
+                    fields[field_name] = float(clean_value)
+                # Check if it's a boolean
+                elif clean_value.lower() in ["true", "yes"]:
+                    fields[field_name] = True
+                elif clean_value.lower() in ["false", "no"]:
+                    fields[field_name] = False
+                # Check if it's a list (comma separated values)
+                elif "," in clean_value and not "[" in clean_value:
+                    fields[field_name] = [item.strip() for item in clean_value.split(",")]
+                # Otherwise keep as string
+                else:
+                    fields[field_name] = clean_value
+            except Exception:
+                # If conversion fails, keep the original string
+                fields[field_name] = clean_value
+        
+        # Log the extraction results
+        if fields:
+            logger.info(f"Successfully extracted {len(fields)} delimited fields for '{prompt_name}'")
+        else:
+            logger.warning(f"No delimited fields found for '{prompt_name}'")
+        
+        return fields
+
+
+
+
     def _smart_chunk_content(self, content, max_size=None, model=None):
         """
         Intelligently chunk content into logical sections based on structure and model capabilities.
@@ -2242,8 +2738,6 @@ class ContentAnalyzer:
             # Default for unknown models - use a moderate size
             # This will work for most use cases but may not be optimal
             return 15000
-
-
 
 
 def preprocess_content(content_text):
