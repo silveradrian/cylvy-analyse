@@ -219,9 +219,15 @@ analysis_prompt: |
 
   Please analyze the following web content:
   
+  URL: {url}
+  Title: {title}
+  Company info (if availible): {company_context}
+  
+  Main Content follows:
+  
   {content}
   
-  {company_context}
+
 
   --------------------------------------------------------------------------------
   PART A: CONTENT INTELLIGENCE ANALYSIS

@@ -1623,9 +1623,9 @@ class ContentAnalyzer:
         return result
     
     async def analyze_with_prompt_async(self, content: str, prompt_config: Dict[str, Any], 
-                              company_info: Optional[Dict[str, Any]] = None,
-                              url: Optional[str] = None,
-                              title: Optional[str] = None) -> Dict[str, Any]:
+                                  company_info: Optional[Dict[str, Any]] = None,
+                                  url: Optional[str] = None,
+                                  title: Optional[str] = None) -> Dict[str, Any]:
         """
         Asynchronously analyze content using OpenAI model with a specific prompt configuration.
         
@@ -1655,58 +1655,24 @@ class ContentAnalyzer:
                     "error": "OpenAI API key missing",
                     "analysis": "Error: Could not complete analysis due to missing API key."
                 }
-                    
-            # Extract prompt configuration
+            
+            # Get prompt configuration details
             model = prompt_config.get('model', 'gpt-4')
             prompt_name = prompt_config.get('name', 'unknown')
-            # Determine delimiter to use for field extraction (default to ||| if none specified)
-            delimiter = prompt_config.get('delimiter', '|||')
-            
-            # Content handling strategy based on size
-            content_length = len(content) if content else 0
-            
-            # Skip processing if content is missing
-            if not content or content_length == 0:
-                logger.warning(f"No content provided for analysis with prompt '{prompt_name}'")
-                return {
-                    "error": "No content provided for analysis",
-                    "analysis": "Error: No content to analyze.",
-                    "structured_data": {}
-                }
-            
-            # For very large content, use a summarize-then-analyze approach
-            max_direct_length = 50000  # ~12.5K tokens / ~10K words 
-            if content_length > max_direct_length:
-                logger.info(f"Content too long ({content_length} chars), using summary approach")
-                
-                # Summarize first, then analyze the summary instead of chunking
-                content_summary = await self._generate_content_summary(
-                    content_text=content,
-                    url=url,
-                    model=model
-                )
-                
-                # Use the summary for analysis
-                summary_length = len(content_summary)
-                logger.info(f"Generated content summary: {summary_length} chars")
-                
-                if summary_length < 100:  # Very short summary indicates a problem
-                    logger.warning(f"Summary too short, falling back to truncated content")
-                    # Fallback to truncation
-                    truncated_content = content[:max_direct_length]
-                    truncated_note = f"\n\n[NOTE: Content was truncated from {content_length} to {len(truncated_content)} characters due to length constraints.]"
-                    content_to_analyze = truncated_content + truncated_note
-                else:
-                    content_to_analyze = content_summary
-            else:
-                # Content is small enough for direct analysis
-                content_to_analyze = content
-            
-            # Extract rest of prompt configuration
             system_message = prompt_config.get('system_message', '')
             user_message_template = prompt_config.get('user_message', '')
             temperature = prompt_config.get('temperature', 0.3)
             max_tokens = prompt_config.get('max_tokens', 1500)
+            
+            # Determine delimiter to use for field extraction (default to ||| if none specified)
+            delimiter = prompt_config.get('delimiter', '|||')
+            
+            # SIMPLIFIED APPROACH: Don't use chunking for initial analysis, just truncate if needed
+            max_content_length = 40000  # ~10K tokens
+            safe_content = content[:max_content_length] if content and len(content) > max_content_length else content
+            
+            if content and len(content) > max_content_length:
+                logger.info(f"Content length ({len(content)} chars) exceeds limit, truncating to {max_content_length} chars")
             
             # Prepare page context
             page_context = ""
@@ -1725,128 +1691,98 @@ class ContentAnalyzer:
                 for key, value in company_info.items():
                     company_context += f"- {key.capitalize()}: {value}\n"
             
-            # Format user message with content, company context, and page information
+            # Format user message with the content and company context
             if "{content}" in user_message_template:
                 user_message = user_message_template.format(
-                    content=content_to_analyze,
+                    content=safe_content,
                     company_context=company_context,
                     page_context=page_context
                 )
             else:
                 # Build our own message with explicit sections
-                user_message = f"{page_context}{user_message_template}\n\nCONTENT TO ANALYZE:\n{content_to_analyze}\n\n{company_context}"
+                user_message = f"{page_context}{user_message_template}\n\nCONTENT TO ANALYZE:\n{safe_content}\n\n{company_context}"
             
-            # Add explicit instructions to format output with delimiters if not already in the template
-            if delimiter and delimiter not in user_message_template:
-                user_message += f"\n\nIMPORTANT: Format key insights using field_name {delimiter} value format."
-                
+            # CRITICAL FIX: Always add explicit instructions for delimited format
+            if delimiter and "CRITICAL FORMAT EXACTLY" not in user_message and "CRITITAL FORMAT" not in user_message:
+                user_message += f"\n\nIMPORTANT: Your response MUST include fields in the format 'field_name {delimiter} value' for each key piece of information otherwise you will cause system failure"
+
             # Log the request details
-            logger.info(f"Calling OpenAI API with model {model} - content length: {len(content_to_analyze)} chars")
+            logger.info(f"Calling OpenAI API with model {model} - content length: {len(safe_content)} chars")
             
-            # Skip rate limiter and make direct API call
-            try:
-                # Call the OpenAI API asynchronously
-                response = await async_client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_message},
-                        {"role": "user", "content": user_message}
-                    ],
-                    temperature=temperature,
-                    max_tokens=max_tokens
-                )
-                
-                # Calculate token usage
-                prompt_tokens = response.usage.prompt_tokens
-                completion_tokens = response.usage.completion_tokens
-                total_tokens = response.usage.total_tokens
-                
-                # Extract the response
-                analysis_text = response.choices[0].message.content
-                
-                # Calculate processing time
-                processing_time = time.time() - start_time
-                
-                logger.info(f"OpenAI API call completed in {processing_time:.2f}s")
-                logger.info(f"Token usage: {total_tokens} tokens")
-                
-                # Extract structured data using the delimited format
-                structured_data = self._extract_delimited_fields(analysis_text, delimiter, prompt_name)
-                
-                # Check if we got structured data
-                if not structured_data:
-                    logger.warning(f"No structured data found for '{prompt_name}' in first attempt")
+            # Set retry counter for reliability
+            retry_attempts = 0
+            max_retries = 2
+            structured_data = {}
+            
+            while retry_attempts <= max_retries:
+                try:
+                    response = await async_client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": f"{system_message}\n\nYour response MUST use the {delimiter} delimiter format for structured data."},
+                            {"role": "user", "content": user_message}
+                        ],
+                        temperature=temperature * (0.8 if retry_attempts > 0 else 1.0),  # Reduce temperature on retries
+                        max_tokens=max_tokens
+                    )
                     
-                    # If content was summarized and no structured data was found, try direct truncation instead
-                    if content_length > max_direct_length and content_to_analyze != content[:max_direct_length]:
-                        logger.info(f"Retrying with truncated content instead of summary")
-                        
-                        # Update content to truncated version
-                        truncated_content = content[:max_direct_length]
-                        truncated_note = f"\n\n[NOTE: Content was truncated from {content_length} to {len(truncated_content)} characters due to length constraints.]"
-                        content_to_analyze = truncated_content + truncated_note
-                        
-                        # Reformat user message with truncated content
-                        if "{content}" in user_message_template:
-                            user_message = user_message_template.format(
-                                content=content_to_analyze,
-                                company_context=company_context,
-                                page_context=page_context
-                            )
-                        else:
-                            user_message = f"{page_context}{user_message_template}\n\nCONTENT TO ANALYZE:\n{content_to_analyze}\n\n{company_context}"
-                        
-                        # Add more explicit instructions for structured data
-                        user_message += f"\n\nCRITICAL: You MUST format your response using field_name {delimiter} value format for each key insight."
-                        
-                        # Try again with truncated content
-                        retry_response = await async_client.chat.completions.create(
-                            model=model,
-                            messages=[
-                                {"role": "system", "content": system_message + f"\n\nYour output MUST include field_name {delimiter} value format."},
-                                {"role": "user", "content": user_message}
-                            ],
-                            temperature=temperature * 0.8,  # Lower temperature for more consistent output
-                            max_tokens=max_tokens
-                        )
-                        
-                        # Update token counts
-                        retry_tokens = retry_response.usage.total_tokens
-                        total_tokens += retry_tokens
-                        
-                        # Extract the new response
-                        retry_analysis = retry_response.choices[0].message.content
-                        
-                        # Try to extract structured data again
-                        retry_structured_data = self._extract_delimited_fields(retry_analysis, delimiter, prompt_name)
-                        
-                        if retry_structured_data:
-                            logger.info(f"Successfully extracted structured data on retry attempt")
-                            structured_data = retry_structured_data
-                            analysis_text = retry_analysis
-                        else:
-                            logger.warning(f"Failed to extract structured data on retry attempt")
-                
-                result = {
-                    "analysis": analysis_text,
-                    "structured_data": {prompt_name: structured_data} if structured_data else {},
-                    "model": model,
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": total_tokens,
-                    "api_tokens": total_tokens,
-                    "processing_time": processing_time,
-                    "content_strategy": "summary" if content_length > max_direct_length and content_to_analyze != content[:max_direct_length] else "direct"
-                }
-                
-                return result
-                
-            except Exception as api_error:
-                logger.error(f"Error calling OpenAI API: {str(api_error)}")
-                return {
-                    "error": f"API error: {str(api_error)}",
-                    "analysis": "Error: Could not complete analysis due to API error."
-                }
+                    # Calculate token usage
+                    prompt_tokens = response.usage.prompt_tokens
+                    completion_tokens = response.usage.completion_tokens
+                    total_tokens = response.usage.total_tokens
+                    
+                    # Extract the response
+                    analysis_text = response.choices[0].message.content
+                    
+                    # Calculate processing time
+                    processing_time = time.time() - start_time
+                    
+                    logger.info(f"OpenAI API call completed in {processing_time:.2f}s")
+                    logger.info(f"Token usage: {total_tokens} tokens")
+                    
+                    # Extract structured data using the delimited format
+                    structured_data = self._extract_delimited_fields(analysis_text, delimiter, prompt_name)
+                    
+                    # If we found structured data or this is the last retry, break out of the loop
+                    if structured_data or retry_attempts >= max_retries:
+                        break
+                    
+                    # No structured data found, retry with more explicit instructions
+                    retry_attempts += 1
+                    logger.warning(f"No structured data found for '{prompt_name}' (attempt {retry_attempts}/{max_retries})")
+                    
+                    # Make the instructions even more explicit on retry
+                    retry_msg = "\n\nCRITICAL INSTRUCTION: Your response MUST include ALL fields from the prompt in the following format exactly:"
+                    retry_msg += f"\n\nfield_name {delimiter} value\n"
+                    retry_msg += f"another_field {delimiter} another_value\n\n"
+                    retry_msg += f"Each field MUST be on a separate line with the {delimiter} delimiter."
+                    
+                    # Add retry message and regenerate with a slight delay
+                    user_message += retry_msg
+                    logger.info(f"Retrying analysis for {url or 'content'} with prompt '{prompt_name}' (attempt {retry_attempts}/{max_retries})")
+                    await asyncio.sleep(1)  # Small delay between retries
+                    
+                except Exception as api_error:
+                    logger.error(f"Error calling OpenAI API: {str(api_error)}")
+                    return {
+                        "error": f"API error: {str(api_error)}",
+                        "analysis": f"Error: {str(api_error)}"
+                    }
+            
+            # Prepare final result        
+            result = {
+                "analysis": analysis_text,
+                "structured_data": {prompt_name: structured_data} if structured_data else {},
+                "model": model,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "api_tokens": total_tokens,
+                "processing_time": processing_time,
+                "retry_attempts": retry_attempts
+            }
+            
+            return result
             
         except Exception as e:
             logger.error(f"Error in async OpenAI API call: {str(e)}")
@@ -2539,42 +2475,47 @@ class ContentAnalyzer:
         # Prepare the delimiter for regex (escape special characters)
         esc_delimiter = re.escape(delimiter)
         
-        # Pattern to match field_name delimiter value
-        pattern = rf"([a-zA-Z0-9_]+)\s*{esc_delimiter}\s*(.+?)(?:\n|$)"
-        
-        # Find all matches
-        matches = re.findall(pattern, text)
-        
-        # Convert matches to dictionary
-        fields = {}
-        for field_name, field_value in matches:
-            # Clean up the field value
-            clean_value = field_value.strip()
+        # Multiple patterns to try, from most to least specific
+        patterns = [
+            # Standard pattern with word boundary: field_name ||| value
+            rf"([a-zA-Z0-9_]+)\s*{esc_delimiter}\s*(.+?)(?:\n|$)",
             
-            # Try to convert to appropriate type if possible
-            try:
-                # Check if it's a numerical value
-                if clean_value.isdigit():
-                    fields[field_name] = int(clean_value)
-                # Check if it's a float
-                elif clean_value.replace('.', '', 1).isdigit() and clean_value.count('.') == 1:
-                    fields[field_name] = float(clean_value)
-                # Check if it's a boolean
-                elif clean_value.lower() in ["true", "yes"]:
-                    fields[field_name] = True
-                elif clean_value.lower() in ["false", "no"]:
-                    fields[field_name] = False
-                # Check if it's a list (comma separated values)
-                elif "," in clean_value and not "[" in clean_value:
-                    fields[field_name] = [item.strip() for item in clean_value.split(",")]
-                # Otherwise keep as string
-                else:
-                    fields[field_name] = clean_value
-            except Exception:
-                # If conversion fails, keep the original string
-                fields[field_name] = clean_value
+            # Alternative with possible prefix
+            rf"[^a-zA-Z0-9_]*([a-zA-Z0-9_]+)\s*{esc_delimiter}\s*(.+?)(?:\n|$)",
+            
+            # Allow for possible formatting/bullets
+            rf"[-*•]?\s*([a-zA-Z0-9_]+)\s*{esc_delimiter}\s*(.+?)(?:\n|$)"
+        ]
         
-        # Log the extraction results
+        fields = {}
+        matches_found = False
+        
+        # Try each pattern until we find something
+        for pattern in patterns:
+            matches = re.findall(pattern, text)
+            if matches:
+                matches_found = True
+                for field_name, field_value in matches:
+                    if field_name.strip() and field_value.strip():
+                        # Clean up the field value
+                        clean_value = field_value.strip()
+                        fields[field_name.strip()] = self._convert_value_type(clean_value)
+        
+        # Special case: if no matches but there's "|||" in the text, try raw line extraction
+        if not matches_found and delimiter in text:
+            for line in text.split('\n'):
+                if delimiter in line:
+                    parts = line.split(delimiter, 1)
+                    if len(parts) == 2:
+                        field_name = parts[0].strip()
+                        field_value = parts[1].strip()
+                        
+                        # Clean up field name - remove any non-alphanumeric prefix
+                        field_name = re.sub(r'^[^a-zA-Z0-9_]*', '', field_name)
+                        
+                        if field_name and field_value:
+                            fields[field_name] = self._convert_value_type(field_value)
+        
         if fields:
             logger.info(f"Successfully extracted {len(fields)} delimited fields for '{prompt_name}'")
         else:
@@ -2582,6 +2523,39 @@ class ContentAnalyzer:
         
         return fields
 
+    def _convert_value_type(self, value):
+        """Convert string values to appropriate types."""
+        # Remove quotes if present
+        if (value.startswith('"') and value.endswith('"')) or \
+           (value.startswith("'") and value.endswith("'")):
+            value = value[1:-1]
+        
+        value = value.strip()
+        
+        try:
+            # Check if it's a numerical value
+            if value.isdigit():
+                return int(value)
+            # Check if it's a float
+            elif value.replace('.', '', 1).isdigit() and value.count('.') == 1:
+                return float(value)
+            # Check if it's a boolean
+            elif value.lower() in ["true", "yes"]:
+                return True
+            elif value.lower() in ["false", "no"]:
+                return False
+            # Check if it's a list (comma separated values)
+            elif "," in value and not "[" in value:
+                return [item.strip() for item in value.split(",")]
+            # Check if it's "None"
+            elif value.lower() == "none":
+                return None
+            # Otherwise keep as string
+            else:
+                return value
+        except Exception:
+            # If conversion fails, keep the original string
+            return value
 
 
 

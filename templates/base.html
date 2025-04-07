@@ -3,62 +3,104 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Cylvy Content Analyzer{% endblock %}</title>
+    <title>{% block title %}Content Analyzer{% endblock %}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <!-- Import Inter font from Google Fonts (Bootstrap 5 default) -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        .navbar-brand { font-weight: bold; }
-        .sidebar { position: sticky; top: 0; height: calc(100vh - 56px); overflow-y: auto; }
-        .footer { font-size: 0.8rem; margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #eee; }
-        .bg-status { background-color: #f8f9fa; padding: 0.5rem; margin-top: 0.5rem; border-radius: 0.25rem; }
-        .badge-bq-enabled { background-color: #198754; color: white; }
-        .badge-bq-disabled { background-color: #dc3545; color: white; }
+        /* Apply Inter font throughout the application */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        
+        /* Cylvy branding colors */
+        :root {
+            --cylvy-amaranth: #E51848;
+            --cylvy-grape: #8806BF;
+        }
+        
+        /* Navbar with gradient */
+        .navbar.bg-primary {
+            background: linear-gradient(to right, var(--cylvy-amaranth), var(--cylvy-grape)) !important;
+        }
+        
+        /* Link styling */
+        a {
+            color: var(--cylvy-amaranth);
+            text-decoration: none;
+        }
+        
+        a:hover {
+            color: var(--cylvy-grape);
+        }
+        
+        /* Keep sidebar styling */
+        .sidebar { 
+            position: sticky; 
+            top: 0; 
+            height: calc(100vh - 56px); 
+            overflow-y: auto; 
+        }
+        
+        /* Footer styling */
+        .footer { 
+            font-size: 0.8rem; 
+            margin-top: 2rem; 
+            padding-top: 1rem; 
+            border-top: 1px solid #eee; 
+        }
+        
+        /* Fix button styles to not be affected by the link color change */
+        .btn-primary {
+            background-color: #0d6efd;
+            border-color: #0d6efd;
+        }
+        
+        .btn-primary:hover {
+            background-color: #0b5ed7;
+            border-color: #0a58ca;
+        }
+        
+        /* Don't apply link colors to badge links */
+        .badge a, a.badge {
+            color: inherit;
+        }
+        
+        /* Button links should use their button colors */
+        .btn {
+            color: inherit;
+        }
     </style>
     {% block head %}{% endblock %}
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
         <div class="container-fluid">
-            <a class="navbar-brand" href="/">Cylvy Content Analyzer</a>
+            <a class="navbar-brand" href="/">
+                <!-- Cylvy Logo SVG -->
+                <svg width="75" height="24" viewBox="0 0 75 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M26.1023 5.70816H29.8312C29.8406 5.80392 29.8556 5.89592 29.8556 5.98792C29.8556 7.63269 29.8669 9.27745 29.8481 10.9222C29.8425 11.4235 29.788 11.9305 29.6904 12.4224C29.4914 13.4325 29.0407 14.3019 28.117 14.867C28.1414 14.9046 28.1526 14.944 28.1752 14.9553C29.6115 15.6274 30.1542 16.8422 30.2011 18.3349C30.2593 20.2425 29.3862 21.6 27.6701 22.4036C26.0817 23.1472 24.3843 23.2579 22.6645 23.1659C21.5548 23.1077 20.4677 22.9237 19.4425 22.4712C17.4936 21.6113 16.5529 20.0754 16.4422 17.95C16.536 17.9369 16.6262 17.9125 16.7163 17.9125C17.7865 17.9106 18.8567 17.905 19.927 17.9181C20.0359 17.9181 20.2255 18.0139 20.2424 18.0927C20.494 19.2925 21.2976 19.8407 22.4448 19.9834C23.2953 20.0886 24.1496 20.1092 24.9833 19.8651C26.1605 19.5197 26.737 18.5358 26.3934 17.4694C26.3427 17.3135 26.26 17.1614 26.168 17.0244C25.9446 16.692 25.678 16.5644 25.233 16.647C23.5113 16.9662 21.7858 16.9286 20.0903 16.4724C18.0118 15.9128 16.8515 14.5065 16.5173 12.4111C16.4215 11.8103 16.3821 11.1945 16.3746 10.5842C16.3539 9.08406 16.3689 7.58387 16.3671 6.0818C16.3671 5.96539 16.3671 5.8471 16.3671 5.71004H20.1034C20.1034 5.84898 20.1034 5.97666 20.1034 6.10433C20.1034 7.58011 20.0978 9.05777 20.1147 10.5336C20.1185 10.9016 20.1617 11.2771 20.2424 11.6376C20.4827 12.7059 21.0704 13.2748 22.1575 13.3912C22.8203 13.4626 23.5038 13.4607 24.1628 13.38C25.1297 13.2617 25.7531 12.6796 25.954 11.7127C26.0422 11.2921 26.0948 10.8584 26.0986 10.4303C26.1155 8.87001 26.1061 7.30974 26.1061 5.70629L26.1023 5.70816Z" fill="white"/>
+                    <path d="M54.4669 5.71004H58.2032C58.2032 5.85462 58.2032 5.98229 58.2032 6.11185C58.2032 7.57636 58.1957 9.04088 58.2126 10.5054C58.2164 10.8978 58.269 11.2959 58.3535 11.6808C58.5713 12.6778 59.1833 13.2748 60.1935 13.3875C60.8431 13.4607 61.5153 13.4663 62.1649 13.395C63.3084 13.2692 63.9505 12.6102 64.1158 11.4667C64.1852 10.9823 64.2021 10.4866 64.2059 9.99657C64.2171 8.58087 64.2096 7.16705 64.2096 5.72131H67.9348C67.9423 5.76637 67.9573 5.80956 67.9573 5.85462C67.9573 7.64396 67.9742 9.43142 67.9385 11.2208C67.9273 11.7765 67.8071 12.3379 67.67 12.8824C67.4579 13.7273 66.9772 14.4033 66.2186 14.8727C66.2468 14.9102 66.26 14.9478 66.2862 14.9609C67.6663 15.6012 68.2295 16.7559 68.3009 18.1979C68.4079 20.3345 67.364 21.8554 65.2761 22.6196C63.8172 23.1547 62.302 23.2561 60.7661 23.1678C59.756 23.1096 58.7609 22.9519 57.8127 22.5801C55.7173 21.7596 54.6659 20.2012 54.5532 17.9463H58.2934C58.3046 17.9594 58.3309 17.9744 58.3347 17.9932C58.5487 19.1986 59.3016 19.8163 60.4826 19.9759C61.3463 20.0923 62.21 20.113 63.0568 19.8764C64.1571 19.5722 64.6865 18.8175 64.5551 17.7472C64.5288 17.5294 64.4425 17.3022 64.3298 17.1126C64.0463 16.632 63.8473 16.5794 63.3009 16.6695C61.5867 16.9474 59.8724 16.9305 58.1901 16.4742C56.0647 15.8978 54.8912 14.4483 54.6133 12.3041C54.4875 11.3334 54.495 10.342 54.4744 9.36007C54.4518 8.28046 54.4687 7.19897 54.4687 6.11936V5.7138L54.4669 5.71004Z" fill="white"/>
+                    <path d="M14.2153 13.2467C14.174 15.3439 13.0399 16.9868 11.0253 17.6928C8.59379 18.5433 6.1135 18.5546 3.66701 17.7529C1.84012 17.1539 0.70606 15.8509 0.261073 13.977C-0.0919127 12.4938 -0.0900351 11.0011 0.285482 9.52342C0.749245 7.70216 1.87955 6.43291 3.66701 5.85274C6.1135 5.05852 8.59567 5.05852 11.0253 5.91658C12.9798 6.60565 14.0407 8.05139 14.2134 10.1242C14.219 10.1918 14.2134 10.2613 14.2134 10.3683C13.498 10.3683 12.8033 10.3683 12.1105 10.3683C11.6543 10.3683 11.1961 10.3777 10.7399 10.3608C10.6497 10.3571 10.5033 10.2744 10.4826 10.2012C10.1822 9.11973 9.36172 8.69352 8.35721 8.52266C7.48414 8.37433 6.60918 8.38935 5.7455 8.60715C4.55698 8.90757 3.9355 9.73183 3.83599 10.8978C3.77215 11.6526 3.79844 12.4374 3.94114 13.1809C4.18335 14.4464 5.14091 14.9722 6.3313 15.1111C7.24193 15.2162 8.15631 15.2163 9.04066 14.9083C9.73912 14.6642 10.2348 14.2155 10.4582 13.4889C10.4883 13.3931 10.6159 13.2598 10.7004 13.2598C11.8645 13.2448 13.0268 13.2504 14.2172 13.2504L14.2153 13.2467Z" fill="white"/>
+                    <path d="M38.269 5.70629H41.9942C42.1312 6.46859 42.2664 7.23277 42.4072 7.99506C42.7152 9.66799 43.0231 11.3409 43.3404 13.012C43.3817 13.2335 43.4662 13.4494 43.5507 13.6597C43.9938 14.7788 44.7974 15.1017 45.9953 14.8727C46.6299 14.7506 47.0374 14.3019 47.2214 13.7161C47.441 13.0101 47.6006 12.2816 47.7377 11.555C48.0907 9.68301 48.4136 7.80543 48.761 5.9316C48.7779 5.8396 48.9074 5.70066 48.9863 5.70066C50.1504 5.68564 51.3145 5.69127 52.5368 5.69127C52.4504 6.18883 52.3753 6.65635 52.2908 7.12011C51.9078 9.24178 51.5511 11.371 51.123 13.4832C50.9728 14.2268 50.7062 14.9609 50.3945 15.6556C49.7768 17.0281 48.6802 17.8505 47.2007 18.1378C45.9972 18.3706 44.7861 18.3725 43.5826 18.134C42.028 17.8261 40.9615 16.908 40.3119 15.4772C39.7692 14.285 39.5458 13.0101 39.3167 11.7371C38.9788 9.85012 38.6446 7.96127 38.3122 6.0743C38.2916 5.95789 38.2859 5.8396 38.2728 5.70629H38.269Z" fill="white"/>
+                    <path d="M32.6157 0.803917H36.3164V17.8956H32.6157V0.803917Z" fill="white"/>
+                    <path d="M72.5628 10.3064C73.9088 10.3064 74.9999 9.21524 74.9999 7.86927C74.9999 6.52329 73.9088 5.43216 72.5628 5.43216C71.2169 5.43216 70.1257 6.52329 70.1257 7.86927C70.1257 9.21524 71.2169 10.3064 72.5628 10.3064Z" fill="white"/>
+                    <path d="M72.5628 18.2448C73.9088 18.2448 74.9999 17.1537 74.9999 15.8077C74.9999 14.4617 73.9088 13.3706 72.5628 13.3706C71.2169 13.3706 70.1257 14.4617 70.1257 15.8077C70.1257 17.1537 71.2169 18.2448 72.5628 18.2448Z" fill="white"/>
+                </svg>
+            </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav me-auto">
+                <ul class="navbar-nav">
                     <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
                     <li class="nav-item"><a class="nav-link" href="/jobs">Jobs</a></li>
                     <li class="nav-item"><a class="nav-link" href="/prompts">Prompts</a></li>
                 </ul>
-                <!-- BigQuery Status Indicator -->
-                <ul class="navbar-nav">
-                    <li class="nav-item">
-                        <a class="nav-link" href="/bigquery/status" title="BigQuery Storage Status">
-                            <i class="bi bi-database"></i> BigQuery
-                            {% if config.get('BIGQUERY_ENABLED', False) %}
-                                <span class="badge rounded-pill badge-bq-enabled">Enabled</span>
-                            {% else %}
-                                <span class="badge rounded-pill badge-bq-disabled">Disabled</span>
-                            {% endif %}
-                        </a>
-                    </li>
-                </ul>
             </div>
         </div>
     </nav>
-
-    <!-- Flash Messages -->
-    <div class="container mt-3">
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                    <div class="alert alert-{{ category if category != 'message' else 'info' }} alert-dismissible fade show" role="alert">
-                        {{ message }}
-                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-                    </div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-    </div>
 
     <div class="container-fluid mt-3">
         <div class="row">
@@ -69,7 +111,7 @@
     <div class="container-fluid footer">
         <div class="row">
             <div class="col-md-12 text-center text-muted">
-                Cylvy Content Analyzer by Adrian Howett v1.0
+                Cylvy Content Analyzer v1.0
             </div>
         </div>
     </div>
