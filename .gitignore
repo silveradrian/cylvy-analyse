@@ -1,4 +1,3 @@
-# Ignore virtual environments
 venv/
 .env
-"data/analysis_export.db" 
+data/analysis_export.db
